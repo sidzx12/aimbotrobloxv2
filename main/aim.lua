@@ -1,4 +1,4 @@
--- uaim v14 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + speed + jump + fly(F) + esp box/line/bold name + esp color/rgb + auto kill | delta / any luau executor
+-- uaim v15 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire(auto fire) + speed + jump + fly(F) + esp box/line/bold name + esp color/rgb + auto kill | delta / any luau executor
 if getgenv and getgenv().__uaim_unload then
     pcall(getgenv().__uaim_unload)
 end
@@ -18,7 +18,7 @@ local CFG = {
     AimPart = "head",       -- "head" | "neck" | "body"
     Silent = false,         -- redirect shots while mouse1 held
     AimKill = false,        -- silent aim, no key needed
-    AimFire = false,        -- pin ammo/clip values on held tool
+    AimFire = false,        -- aimbot lock + automatic fire
     Invisible = false,
     TeamCheck = true,
     NPCs = true,
@@ -53,11 +53,9 @@ local conns = {}
 local refreshers = {}
 local targets = {}
 local lastScan = 0
-local lastAmmo = 0
 local lastFire = 0
+local lastTeleport = 0
 local silentTarget = nil
-local ammoVal = {}
-local ammoAttr = {}
 local origWalk, origJump = 16, 50
 local flying = false
 local espCache = {}
@@ -255,41 +253,6 @@ local okHook, errHook = pcall(function()
 end)
 if not okHook then
     warn("uaim: silent hook failed, executor lacks hookmetamethod - " .. tostring(errHook))
-end
-
--- aimfire: pin ammo-like values on the held tool
-local AMMO_PAT = { "ammo", "clip", "mag", "bullet", "round" }
-
-local function isAmmoName(n)
-    n = n:lower()
-    for _, p in ipairs(AMMO_PAT) do
-        if n:find(p, 1, true) then return true end
-    end
-    return false
-end
-
-local function pinAmmo()
-    local char = LP.Character
-    local tool = char and char:FindFirstChildOfClass("Tool")
-    if not tool then return end
-
-    for _, d in ipairs(tool:GetDescendants()) do
-        if (d:IsA("IntValue") or d:IsA("NumberValue")) and isAmmoName(d.Name) then
-            local top = math.max(ammoVal[d] or 0, d.Value)
-            ammoVal[d] = top
-            if d.Value < top then d.Value = top end
-        end
-    end
-
-    local attrs = ammoAttr[tool] or {}
-    ammoAttr[tool] = attrs
-    for name, val in pairs(tool:GetAttributes()) do
-        if type(val) == "number" and isAmmoName(name) then
-            local top = math.max(attrs[name] or 0, val)
-            attrs[name] = top
-            if val < top then tool:SetAttribute(name, top) end
-        end
-    end
 end
 
 -- movement: speed, jump, fly
@@ -884,11 +847,13 @@ table.insert(conns, UIS.InputBegan:Connect(function(input, gp)
     end
 end))
 
--- auto kill step: teleport behind target, aim, fire. errors are caught by the caller
+-- auto kill: teleport behind target (throttled, pcall-wrapped), aim, fire
 local function autoKillStep(now)
     local t = nearestEnemy()
-    local _, myRoot = getHumRoot()
-    if not (t and myRoot) then return nil end
+    local char = LP.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local myRoot = char and char:FindFirstChild("HumanoidRootPart")
+    if not (t and myRoot and hum and hum.Health > 0) then return nil end
 
     local r = rootOf(t.model)
     if not r or not r.Parent then return nil end
@@ -896,9 +861,13 @@ local function autoKillStep(now)
     local goal = aimPos(t.model)
     if not goal then return nil end
 
-    if not myRoot.Anchored then
-        myRoot.CFrame = r.CFrame * CFrame.new(0, 0, 3)
-        myRoot.AssemblyLinearVelocity = Vector3.zero
+    -- teleport at most every 0.2s, and only when not already close
+    if now - lastTeleport > 0.2 and (r.Position - myRoot.Position).Magnitude > 4 then
+        pcall(function()
+            char:PivotTo(r.CFrame * CFrame.new(0, 0, 3))
+            myRoot.AssemblyLinearVelocity = Vector3.zero
+        end)
+        lastTeleport = now
     end
 
     if now - lastFire > 0.15 then
@@ -918,10 +887,6 @@ local function renderStep()
         scan()
         lastScan = now
     end
-    if CFG.AimFire and now - lastAmmo > 0.05 then
-        pinAmmo()
-        lastAmmo = now
-    end
 
     ring.Size = UDim2.fromOffset(CFG.FOV * 2, CFG.FOV * 2)
     ring.Visible = CFG.FOVEnabled
@@ -940,9 +905,15 @@ local function renderStep()
         cam.CFrame = CFrame.lookAt(cam.CFrame.Position, akGoal)
         silentTarget = akGoal
     else
-        -- features only arm once aimbot and fov are both on
-        local armed = CFG.Aimbot and CFG.FOVEnabled
-        local tgt = armed and pickTarget() or nil
+        -- aimbot or aimfire lock, only when fov is on
+        local lockOn = (CFG.Aimbot or CFG.AimFire) and CFG.FOVEnabled
+        local tgt = lockOn and pickTarget() or nil
+
+        -- aimfire shoots automatically while a target is in the fov
+        if tgt and CFG.AimFire and now - lastFire > 0.1 then
+            fireOnce()
+            lastFire = now
+        end
 
         local silentOn = tgt ~= nil and (CFG.AimKill
             or (CFG.Silent and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)))
@@ -983,6 +954,7 @@ if getgenv then
         CFG.Speed = false
         CFG.Jump = false
         CFG.AutoKill = false
+        CFG.AimFire = false
         applyInvis(LP.Character)
         local hum = getHumRoot()
         if hum then
