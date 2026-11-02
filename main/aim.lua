@@ -1,4 +1,4 @@
--- uaim v22 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + fire delay + magnet + body aim + speed + jump + fly(F) + esp box/line/bold name + esp color/rgb + esp target + chams(hologram) + chams rgb + chams target + auto kill | delta / any luau executor
+-- uaim v23 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + fire delay + magnet + body aim + speed + jump + fly(F) + esp box/line/bold name + esp color/rgb + esp target + chams(hologram) + chams color/rgb + chams target + auto kill | delta / any luau executor
 if getgenv and getgenv().__uaim_unload then
     pcall(getgenv().__uaim_unload)
 end
@@ -47,11 +47,12 @@ local CFG = {
     ESPBox = false,
     ESPLine = false,
     ESPName = false,
-    ESPColor = "red",       -- name from ESP_ORDER
+    ESPColor = "red",       -- name from COLOR_ORDER
     ESPRGB = false,         -- cycles hue every frame
     ESPTarget = "enemies",  -- "enemies" | "friends" | "all"
     Chams = false,          -- hologram highlight through walls
-    ChamsRGB = false,       -- cycles hue every frame for chams
+    ChamsColor = "yellow",  -- name from COLOR_ORDER
+    ChamsRGB = false,       -- cycles hue every frame
     ChamsTarget = "enemies",-- "enemies" | "friends" | "all"
     AutoKill = false,       -- teleport behind nearest enemy, aim camera, fire
     MenuKey = Enum.KeyCode.RightShift,
@@ -82,9 +83,9 @@ local CORNERS = {
     Vector3.new(1, 1, -1),   Vector3.new(1, 1, 1),
 }
 
--- esp / chams color presets, in cycle order
-local ESP_ORDER = { "red", "orange", "yellow", "green", "cyan", "blue", "magenta", "white" }
-local ESP_COLORS = {
+-- shared color presets for esp and chams, in cycle order
+local COLOR_ORDER = { "red", "orange", "yellow", "green", "cyan", "blue", "magenta", "white" }
+local COLORS = {
     red = Color3.fromRGB(255, 80, 80),
     orange = Color3.fromRGB(255, 150, 60),
     yellow = Color3.fromRGB(255, 230, 80),
@@ -97,13 +98,13 @@ local ESP_COLORS = {
 local NPC_PINK = Color3.fromRGB(255, 105, 180)
 local VIS_TARGETS = { "enemies", "friends", "all" }
 
--- color for a model: npcs are always pink, otherwise preset or rgb cycle
-local function colorFor(kind, useRgb)
+-- color for a model. npcs are always pink; otherwise the chosen preset or rgb cycle
+local function colorFor(kind, useRgb, presetName)
     if kind == "npc" then return NPC_PINK end
     if useRgb then
         return Color3.fromHSV((os.clock() * 0.4) % 1, 1, 1)
     end
-    return ESP_COLORS[CFG.ESPColor] or ESP_COLORS.red
+    return COLORS[presetName] or COLORS.white
 end
 
 local function refreshAll()
@@ -519,7 +520,7 @@ local function screenBox(m, cam)
     return minX, minY, maxX, maxY
 end
 
--- draws esp and chams for visList. each has its own target setting
+-- draws esp and chams for visList. each has its own target and color setting
 local function updateVisuals(cam)
     local keep = {}
     local espAny = CFG.ESPBox or CFG.ESPLine or CFG.ESPName
@@ -528,13 +529,13 @@ local function updateVisuals(cam)
         local m = v.model
         keep[m] = true
 
-        -- chams: own target setting
+        -- chams: own target, own color
         local wantCham = visAllowed(v.kind, CFG.ChamsTarget)
         local okC, errC = pcall(updateCham, m, wantCham and CFG.Chams,
-            colorFor(v.kind, CFG.ChamsRGB))
+            colorFor(v.kind, CFG.ChamsRGB, CFG.ChamsColor))
         if not okC then warn("uaim chams: " .. tostring(errC)) end
 
-        -- esp: own target setting
+        -- esp: own target, own color
         if Drawing then
             local e = espFor(m)
             if e then
@@ -546,7 +547,7 @@ local function updateVisuals(cam)
                 end
 
                 if minX then
-                    local col = colorFor(v.kind, CFG.ESPRGB)
+                    local col = colorFor(v.kind, CFG.ESPRGB, CFG.ESPColor)
                     local midX = (minX + maxX) / 2
 
                     e.box.Visible = CFG.ESPBox
@@ -925,7 +926,7 @@ sliderRow("magnet radius", function() return CFG.MagnetRadius end,
 toggleRow("body aim", function() return CFG.BodyAim end,
     function(v) CFG.BodyAim = v end)
 
--- column: esp (its own target setting)
+-- column: esp (its own target and color)
 newCol("esp")
 toggleRow("invisible", function() return CFG.Invisible end,
     function(v)
@@ -941,19 +942,22 @@ toggleRow("esp line", function() return CFG.ESPLine end,
     function(v) CFG.ESPLine = v end)
 toggleRow("esp name", function() return CFG.ESPName end,
     function(v) CFG.ESPName = v end)
-cycleRow("esp color", ESP_ORDER,
+cycleRow("esp color", COLOR_ORDER,
     function() return CFG.ESPColor end,
     function(v) CFG.ESPColor = v end)
 toggleRow("esp rgb", function() return CFG.ESPRGB end,
     function(v) CFG.ESPRGB = v end)
 
--- column: chams (its own target setting)
+-- column: chams (its own target, color, rgb)
 newCol("chams")
 toggleRow("chams", function() return CFG.Chams end,
     function(v) CFG.Chams = v end)
 cycleRow("chams target", VIS_TARGETS,
     function() return CFG.ChamsTarget end,
     function(v) CFG.ChamsTarget = v end)
+cycleRow("chams color", COLOR_ORDER,
+    function() return CFG.ChamsColor end,
+    function(v) CFG.ChamsColor = v end)
 toggleRow("chams rgb", function() return CFG.ChamsRGB end,
     function(v) CFG.ChamsRGB = v end)
 
