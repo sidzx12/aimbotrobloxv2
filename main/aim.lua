@@ -1,4 +1,4 @@
--- uaim v16 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + fire delay + speed + jump + fly(F) + esp box/line/bold name + esp color/rgb + auto kill | delta / any luau executor
+-- uaim v17 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire(teleport+fire) + fire delay + speed + jump + fly(F) + esp box/line/bold name + esp color/rgb + auto kill | delta / any luau executor
 if getgenv and getgenv().__uaim_unload then
     pcall(getgenv().__uaim_unload)
 end
@@ -18,7 +18,7 @@ local CFG = {
     AimPart = "head",       -- "head" | "neck" | "body"
     Silent = false,         -- redirect shots while mouse1 held
     AimKill = false,        -- silent aim, no key needed
-    AimFire = false,        -- aimbot lock + automatic fire
+    AimFire = false,        -- teleport behind fov enemy + auto fire
     FireDelay = 0.3,        -- seconds between shots (aimfire + auto kill)
     FireMin = 0.1,
     FireMax = 1.0,
@@ -193,11 +193,11 @@ local function visible(pos, model)
     return false
 end
 
--- nearest enemy inside the fov circle
+-- nearest enemy inside the fov circle. returns aim position and the model
 local function pickTarget()
     local cam = Workspace.CurrentCamera
     local center = cam.ViewportSize / 2
-    local bestPos, bestD = nil, CFG.FOV
+    local bestPos, bestModel, bestD = nil, nil, CFG.FOV
 
     for _, t in ipairs(targets) do
         if t.hum.Health > 0 and t.model.Parent then
@@ -207,13 +207,13 @@ local function pickTarget()
                 if on and sp.Z > 0 then
                     local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
                     if d < bestD and visible(pos, t.model) then
-                        bestPos, bestD = pos, d
+                        bestPos, bestModel, bestD = pos, t.model, d
                     end
                 end
             end
         end
     end
-    return bestPos
+    return bestPos, bestModel
 end
 
 -- silent aim hook (inert after unload via alive flag)
@@ -299,7 +299,7 @@ table.insert(conns, RunService.Heartbeat:Connect(function()
     if not ok then warn("uaim move: " .. tostring(err)) end
 end))
 
--- auto kill helpers
+-- nearest enemy by world distance (used by auto kill)
 local function nearestEnemy()
     local _, myRoot = getHumRoot()
     if not myRoot then return nil end
@@ -314,7 +314,7 @@ local function nearestEnemy()
     return best
 end
 
--- one shot through the held tool only. no mouse1click, so a shot can't register twice
+-- one shot through the held tool only, at most once per fire delay
 local function fireOnce(now)
     if now - lastFire < CFG.FireDelay then return end
     local char = LP.Character
@@ -322,6 +322,30 @@ local function fireOnce(now)
     if not tool then return end
     lastFire = now
     pcall(function() tool:Activate() end)
+end
+
+-- shared by auto kill and aimfire: move 3 studs behind the enemy (throttled),
+-- return the aim position. the camera is not touched here
+local function teleportBehind(model, now)
+    local char = LP.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local myRoot = char and char:FindFirstChild("HumanoidRootPart")
+    if not (hum and myRoot and hum.Health > 0) then return nil end
+
+    local r = rootOf(model)
+    if not r or not r.Parent then return nil end
+
+    local goal = aimPos(model)
+    if not goal then return nil end
+
+    if now - lastTeleport > 0.2 and (r.Position - myRoot.Position).Magnitude > 4 then
+        pcall(function()
+            char:PivotTo(r.CFrame * CFrame.new(0, 0, 3))
+            myRoot.AssemblyLinearVelocity = Vector3.zero
+        end)
+        lastTeleport = now
+    end
+    return goal
 end
 
 -- esp (Drawing API). bold name = two draws offset by 1px
@@ -852,30 +876,12 @@ table.insert(conns, UIS.InputBegan:Connect(function(input, gp)
     end
 end))
 
--- auto kill: teleport behind target (throttled, pcall-wrapped), aim, fire
+-- auto kill: teleport behind nearest enemy, aim camera at them, fire on delay
 local function autoKillStep(now)
     local t = nearestEnemy()
-    local char = LP.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    local myRoot = char and char:FindFirstChild("HumanoidRootPart")
-    if not (t and myRoot and hum and hum.Health > 0) then return nil end
-
-    local r = rootOf(t.model)
-    if not r or not r.Parent then return nil end
-
-    local goal = aimPos(t.model)
-    if not goal then return nil end
-
-    -- teleport at most every 0.2s, and only when not already close
-    if now - lastTeleport > 0.2 and (r.Position - myRoot.Position).Magnitude > 4 then
-        pcall(function()
-            char:PivotTo(r.CFrame * CFrame.new(0, 0, 3))
-            myRoot.AssemblyLinearVelocity = Vector3.zero
-        end)
-        lastTeleport = now
-    end
-
-    fireOnce(now)
+    if not t then return nil end
+    local goal = teleportBehind(t.model, now)
+    if goal then fireOnce(now) end
     return goal
 end
 
@@ -893,42 +899,58 @@ local function renderStep()
     ring.Size = UDim2.fromOffset(CFG.FOV * 2, CFG.FOV * 2)
     ring.Visible = CFG.FOVEnabled
 
-    local akGoal = nil
+    -- auto kill takes priority
     if CFG.AutoKill then
         local ok, res = pcall(autoKillStep, now)
-        if ok then
-            akGoal = res
-        else
+        if ok and res then
+            if (res - cam.CFrame.Position).Magnitude > 0.1 then
+                cam.CFrame = CFrame.lookAt(cam.CFrame.Position, res)
+            end
+            silentTarget = res
+            return
+        elseif not ok then
             warn("uaim autokill: " .. tostring(res))
         end
     end
 
-    if akGoal and (akGoal - cam.CFrame.Position).Magnitude > 0.1 then
-        cam.CFrame = CFrame.lookAt(cam.CFrame.Position, akGoal)
-        silentTarget = akGoal
-    else
-        -- aimbot or aimfire lock, only when fov is on
-        local lockOn = (CFG.Aimbot or CFG.AimFire) and CFG.FOVEnabled
-        local tgt = lockOn and pickTarget() or nil
-
-        -- aimfire shoots only while a target is locked in the fov
-        if tgt and CFG.AimFire then
-            fireOnce(now)
+    -- aimfire: teleport behind the fov enemy and fire. camera is left alone
+    if CFG.AimFire and CFG.FOVEnabled then
+        local _, tgtModel = pickTarget()
+        if tgtModel then
+            local ok, res = pcall(teleportBehind, tgtModel, now)
+            if ok and res then
+                fireOnce(now)
+            elseif not ok then
+                warn("uaim aimfire: " .. tostring(res))
+            end
         end
-
-        local silentOn = tgt ~= nil and (CFG.AimKill
-            or (CFG.Silent and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)))
-        silentTarget = silentOn and tgt or nil
-
-        -- lock straight onto the nearest enemy in fov (no smoothing).
-        -- silent/aimkill redirect the shot instead of moving the camera.
-        if tgt and not silentOn then
-            cam.CFrame = CFrame.lookAt(cam.CFrame.Position, tgt)
-        end
+        silentTarget = nil
+        return
     end
 
-    local okEsp, errEsp = pcall(updateEsp, cam)
-    if not okEsp then warn("uaim esp: " .. tostring(errEsp)) end
+    -- aimbot lock, only when fov is on
+    local tgt = nil
+    if CFG.Aimbot and CFG.FOVEnabled then
+        tgt = pickTarget()
+    end
+
+    local silentOn = tgt ~= nil and (CFG.AimKill
+        or (CFG.Silent and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)))
+    silentTarget = silentOn and tgt or nil
+
+    -- lock straight onto the nearest enemy in fov (no smoothing).
+    -- silent/aimkill redirect the shot instead of moving the camera.
+    if tgt and not silentOn then
+        cam.CFrame = CFrame.lookAt(cam.CFrame.Position, tgt)
+    end
+end
+
+local function runRender()
+    local cam = Workspace.CurrentCamera
+    if cam then
+        local okEsp, errEsp = pcall(updateEsp, cam)
+        if not okEsp then warn("uaim esp: " .. tostring(errEsp)) end
+    end
 end
 
 RunService:BindToRenderStep(BIND, Enum.RenderPriority.Last.Value, function()
@@ -937,6 +959,7 @@ RunService:BindToRenderStep(BIND, Enum.RenderPriority.Last.Value, function()
         lastRenderErr = err
         warn("uaim render: " .. tostring(err))
     end
+    runRender()
 end)
 
 -- unload
