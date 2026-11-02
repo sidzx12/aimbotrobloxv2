@@ -1,4 +1,4 @@
--- uaim v9 | menu + scroll + sliders + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + speed + jump + fly(F) | delta / any luau executor
+-- uaim v10 | menu + scroll + sliders + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + speed + jump + fly(F) | delta / any luau executor
 if getgenv and getgenv().__uaim_unload then
     pcall(getgenv().__uaim_unload)
 end
@@ -350,12 +350,26 @@ title.Parent = frame
 local pointerPos = UIS:GetMouseLocation()
 local pointerDown = false
 local dragging = false
-local dragStartMouse, dragStartPos
+local dragOffset = Vector2.new(0, 0)
 local activeSlider = nil
+
+local function inTitle(p)
+    local a, s = title.AbsolutePosition, title.AbsoluteSize
+    return p.X >= a.X and p.X <= a.X + s.X and p.Y >= a.Y and p.Y <= a.Y + s.Y
+end
+
+-- start a drag from the press itself, not a delayed button event
+local function beginDrag()
+    if inTitle(pointerPos) then
+        dragging = true
+        dragOffset = pointerPos - frame.AbsolutePosition
+    end
+end
 
 table.insert(conns, UIS.TouchStarted:Connect(function(touch)
     pointerPos = Vector2.new(touch.Position.X, touch.Position.Y)
     pointerDown = true
+    beginDrag()
 end))
 table.insert(conns, UIS.TouchMoved:Connect(function(touch)
     pointerPos = Vector2.new(touch.Position.X, touch.Position.Y)
@@ -368,22 +382,23 @@ table.insert(conns, UIS.InputChanged:Connect(function(input)
         pointerPos = Vector2.new(input.Position.X, input.Position.Y)
     end
 end))
-
-title.MouseButton1Down:Connect(function()
-    dragging = true
-    dragStartMouse = pointerPos
-    dragStartPos = frame.Position
-end)
+table.insert(conns, UIS.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        pointerPos = Vector2.new(input.Position.X, input.Position.Y)
+        beginDrag()
+    end
+end))
 
 table.insert(conns, RunService.RenderStepped:Connect(function()
     local held = pointerDown or UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
 
     if dragging then
         if held then
-            local d = pointerPos - dragStartMouse
-            frame.Position = UDim2.fromOffset(
-                dragStartPos.X.Offset + d.X,
-                dragStartPos.Y.Offset + d.Y)
+            local vs = Workspace.CurrentCamera.ViewportSize
+            local np = pointerPos - dragOffset
+            local x = math.clamp(np.X, 0, math.max(0, vs.X - frame.AbsoluteSize.X))
+            local y = math.clamp(np.Y, 0, math.max(0, vs.Y - frame.AbsoluteSize.Y))
+            frame.Position = UDim2.fromOffset(x, y)
         else
             dragging = false
         end
