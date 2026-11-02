@@ -1,4 +1,4 @@
--- uaim v17 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire(teleport+fire) + fire delay + speed + jump + fly(F) + esp box/line/bold name + esp color/rgb + auto kill | delta / any luau executor
+-- uaim v18 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + fire delay + magnet + body aim + speed + jump + fly(F) + esp box/line/bold name + esp color/rgb + auto kill | delta / any luau executor
 if getgenv and getgenv().__uaim_unload then
     pcall(getgenv().__uaim_unload)
 end
@@ -18,10 +18,15 @@ local CFG = {
     AimPart = "head",       -- "head" | "neck" | "body"
     Silent = false,         -- redirect shots while mouse1 held
     AimKill = false,        -- silent aim, no key needed
-    AimFire = false,        -- teleport behind fov enemy + auto fire
+    AimFire = false,        -- teleport behind fov enemy + auto fire, no camera
     FireDelay = 0.3,        -- seconds between shots (aimfire + auto kill)
     FireMin = 0.1,
     FireMax = 1.0,
+    Magnet = false,         -- redirect shots to nearby enemies, even on a miss
+    MagnetRadius = 90,      -- pixels from crosshair
+    MagnetMin = 20,
+    MagnetMax = 300,
+    BodyAim = false,        -- magnet sticks to torso only, ignores head
     Invisible = false,
     TeamCheck = true,
     NPCs = true,
@@ -44,7 +49,7 @@ local CFG = {
     ESPName = false,
     ESPColor = "red",       -- name from ESP_ORDER
     ESPRGB = false,         -- cycles hue every frame
-    AutoKill = false,       -- teleport behind nearest enemy and fire
+    AutoKill = false,       -- teleport behind nearest enemy, aim camera, fire
     MenuKey = Enum.KeyCode.RightShift,
     ToggleKey = Enum.KeyCode.RightAlt,
 }
@@ -127,12 +132,16 @@ local function rootOf(model)
         or model:FindFirstChild("Torso")
 end
 
+local function torsoOf(model)
+    return model:FindFirstChild("UpperTorso")
+        or model:FindFirstChild("Torso")
+        or model:FindFirstChild("HumanoidRootPart")
+end
+
 -- aim position per part choice
 local function aimPos(model)
     local head = model:FindFirstChild("Head")
-    local torso = model:FindFirstChild("UpperTorso")
-        or model:FindFirstChild("Torso")
-        or model:FindFirstChild("HumanoidRootPart")
+    local torso = torsoOf(model)
 
     if CFG.AimPart == "head" and head then
         return head.Position
@@ -144,6 +153,15 @@ local function aimPos(model)
         return head.Position
     end
     return nil
+end
+
+-- magnet position: torso only when body aim is on, otherwise the aim part
+local function magnetPos(model)
+    if CFG.BodyAim then
+        local torso = torsoOf(model)
+        return torso and torso.Position or nil
+    end
+    return aimPos(model)
 end
 
 -- targeting
@@ -214,6 +232,29 @@ local function pickTarget()
         end
     end
     return bestPos, bestModel
+end
+
+-- nearest enemy to the crosshair within the magnet radius. uses body aim if on
+local function pickMagnet()
+    local cam = Workspace.CurrentCamera
+    local center = cam.ViewportSize / 2
+    local bestPos, bestD = nil, CFG.MagnetRadius
+
+    for _, t in ipairs(targets) do
+        if t.hum.Health > 0 and t.model.Parent then
+            local pos = magnetPos(t.model)
+            if pos then
+                local sp, on = cam:WorldToViewportPoint(pos)
+                if on and sp.Z > 0 then
+                    local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+                    if d < bestD and visible(pos, t.model) then
+                        bestPos, bestD = pos, d
+                    end
+                end
+            end
+        end
+    end
+    return bestPos
 end
 
 -- silent aim hook (inert after unload via alive flag)
@@ -794,6 +835,15 @@ toggleRow("aimfire", function() return CFG.AimFire end,
 sliderRow("fire delay", function() return CFG.FireDelay end,
     function(v) CFG.FireDelay = v end, CFG.FireMin, CFG.FireMax, 0.05, fmtSec)
 
+-- column: magnet
+newCol("magnet")
+toggleRow("magnet", function() return CFG.Magnet end,
+    function(v) CFG.Magnet = v end)
+sliderRow("magnet radius", function() return CFG.MagnetRadius end,
+    function(v) CFG.MagnetRadius = v end, CFG.MagnetMin, CFG.MagnetMax, 10, fmtInt)
+toggleRow("body aim", function() return CFG.BodyAim end,
+    function(v) CFG.BodyAim = v end)
+
 -- column: esp + invisible
 newCol("esp")
 toggleRow("invisible", function() return CFG.Invisible end,
@@ -928,6 +978,16 @@ local function renderStep()
         return
     end
 
+    -- magnet: while shooting, pull the shot to the nearest enemy near the crosshair.
+    -- redirects the bullet only; the camera is not moved
+    if CFG.Magnet and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+        local mp = pickMagnet()
+        if mp then
+            silentTarget = mp
+            return
+        end
+    end
+
     -- aimbot lock, only when fov is on
     local tgt = nil
     if CFG.Aimbot and CFG.FOVEnabled then
@@ -979,6 +1039,8 @@ if getgenv then
         CFG.Jump = false
         CFG.AutoKill = false
         CFG.AimFire = false
+        CFG.Magnet = false
+        CFG.BodyAim = false
         applyInvis(LP.Character)
         local hum = getHumRoot()
         if hum then
