@@ -1,4 +1,4 @@
--- uaim v18 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + fire delay + magnet + body aim + speed + jump + fly(F) + esp box/line/bold name + esp color/rgb + auto kill | delta / any luau executor
+-- uaim v20 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + fire delay + magnet + body aim + speed + jump + fly(F) + esp box/line/bold name + esp color/rgb + chams + chams rgb + vis target + auto kill | delta / any luau executor
 if getgenv and getgenv().__uaim_unload then
     pcall(getgenv().__uaim_unload)
 end
@@ -22,11 +22,11 @@ local CFG = {
     FireDelay = 0.3,        -- seconds between shots (aimfire + auto kill)
     FireMin = 0.1,
     FireMax = 1.0,
-    Magnet = false,         -- redirect shots to nearby enemies, even on a miss
+    Magnet = false,         -- while mouse1 held, redirect shot to nearest enemy in radius
     MagnetRadius = 90,      -- pixels from crosshair
     MagnetMin = 20,
     MagnetMax = 300,
-    BodyAim = false,        -- magnet sticks to torso only, ignores head
+    BodyAim = false,        -- torso only, for lock + magnet + fire (ignores head)
     Invisible = false,
     TeamCheck = true,
     NPCs = true,
@@ -49,6 +49,9 @@ local CFG = {
     ESPName = false,
     ESPColor = "red",       -- name from ESP_ORDER
     ESPRGB = false,         -- cycles hue every frame
+    Chams = false,          -- highlight through walls
+    ChamsRGB = false,       -- cycles hue every frame for chams
+    VisTarget = "enemies",  -- "enemies" | "friends" | "all"
     AutoKill = false,       -- teleport behind nearest enemy, aim camera, fire
     MenuKey = Enum.KeyCode.RightShift,
     ToggleKey = Enum.KeyCode.RightAlt,
@@ -59,7 +62,8 @@ local BIND = "uaim_loop"
 local alive = true
 local conns = {}
 local refreshers = {}
-local targets = {}
+local targets = {}      -- combat targets (enemies by team/npc rules)
+local visList = {}      -- visual targets: { hum, model, kind }
 local lastScan = 0
 local lastFire = 0
 local lastTeleport = 0
@@ -67,6 +71,7 @@ local silentTarget = nil
 local origWalk, origJump = 16, 50
 local flying = false
 local espCache = {}
+local chamCache = {}
 local lastRenderErr = nil
 
 local CORNERS = {
@@ -76,7 +81,7 @@ local CORNERS = {
     Vector3.new(1, 1, -1),   Vector3.new(1, 1, 1),
 }
 
--- esp color presets, in cycle order
+-- esp / chams color presets, in cycle order
 local ESP_ORDER = { "red", "orange", "yellow", "green", "cyan", "blue", "magenta", "white" }
 local ESP_COLORS = {
     red = Color3.fromRGB(255, 80, 80),
@@ -88,9 +93,13 @@ local ESP_COLORS = {
     magenta = Color3.fromRGB(255, 90, 230),
     white = Color3.fromRGB(255, 255, 255),
 }
+local NPC_PINK = Color3.fromRGB(255, 105, 180)
+local VIS_TARGETS = { "enemies", "friends", "all" }
 
-local function getEspColor()
-    if CFG.ESPRGB then
+-- color for a model: npcs are always pink, otherwise preset or rgb cycle
+local function colorFor(kind, useRgb)
+    if kind == "npc" then return NPC_PINK end
+    if useRgb then
         return Color3.fromHSV((os.clock() * 0.4) % 1, 1, 1)
     end
     return ESP_COLORS[CFG.ESPColor] or ESP_COLORS.red
@@ -138,8 +147,13 @@ local function torsoOf(model)
         or model:FindFirstChild("HumanoidRootPart")
 end
 
--- aim position per part choice
+-- one aim position for the whole script. body aim forces the torso
 local function aimPos(model)
+    if CFG.BodyAim then
+        local torso = torsoOf(model)
+        return torso and torso.Position or nil
+    end
+
     local head = model:FindFirstChild("Head")
     local torso = torsoOf(model)
 
@@ -155,16 +169,31 @@ local function aimPos(model)
     return nil
 end
 
--- magnet position: torso only when body aim is on, otherwise the aim part
-local function magnetPos(model)
-    if CFG.BodyAim then
-        local torso = torsoOf(model)
-        return torso and torso.Position or nil
-    end
-    return aimPos(model)
+-- friend = on your team or on your friends list
+local function isFriend(p)
+    if LP.Team and p.Team == LP.Team then return true end
+    local ok, res = pcall(function() return LP:IsFriendsWith(p.UserId) end)
+    return ok and res
 end
 
--- targeting
+-- kind for visuals: "npc", "enemy", "friend", or nil for yourself
+local function kindOf(model)
+    local p = Players:GetPlayerFromCharacter(model)
+    if not p then return "npc" end
+    if p == LP then return nil end
+    if isFriend(p) then return "friend" end
+    return "enemy"
+end
+
+-- does the vis target setting include this kind
+local function visAllowed(kind)
+    local t = CFG.VisTarget
+    if t == "all" then return true end
+    if t == "enemies" then return kind == "enemy" or kind == "npc" end
+    return kind == "friend"
+end
+
+-- combat targeting
 local function isEnemy(model)
     local p = Players:GetPlayerFromCharacter(model)
     if not p then return CFG.NPCs end
@@ -175,11 +204,18 @@ end
 
 local function scan()
     table.clear(targets)
+    table.clear(visList)
     for _, d in ipairs(Workspace:GetDescendants()) do
         if d:IsA("Humanoid") and d.Health > 0 then
             local m = d.Parent
-            if m and m:IsA("Model") and m ~= LP.Character and isEnemy(m) then
-                table.insert(targets, { hum = d, model = m })
+            if m and m:IsA("Model") and m ~= LP.Character then
+                local kind = kindOf(m)
+                if kind then
+                    table.insert(visList, { hum = d, model = m, kind = kind })
+                end
+                if isEnemy(m) then
+                    table.insert(targets, { hum = d, model = m })
+                end
             end
         end
     end
@@ -234,7 +270,7 @@ local function pickTarget()
     return bestPos, bestModel
 end
 
--- nearest enemy to the crosshair within the magnet radius. uses body aim if on
+-- nearest enemy to the crosshair within the magnet radius, using the same aim position
 local function pickMagnet()
     local cam = Workspace.CurrentCamera
     local center = cam.ViewportSize / 2
@@ -242,7 +278,7 @@ local function pickMagnet()
 
     for _, t in ipairs(targets) do
         if t.hum.Health > 0 and t.model.Parent then
-            local pos = magnetPos(t.model)
+            local pos = aimPos(t.model)
             if pos then
                 local sp, on = cam:WorldToViewportPoint(pos)
                 if on and sp.Z > 0 then
@@ -435,6 +471,35 @@ local function destroyEsp(model)
     espCache[model] = nil
 end
 
+-- chams: a Highlight parented to the model, drawn through walls
+local function updateCham(model, show, col)
+    local h = chamCache[model]
+    if not show then
+        if h then h.Enabled = false end
+        return
+    end
+    if not h then
+        h = Instance.new("Highlight")
+        h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        h.FillTransparency = 0.5
+        h.OutlineTransparency = 0
+        chamCache[model] = h
+    end
+    h.Adornee = model
+    h.Parent = model
+    h.Enabled = true
+    h.FillColor = col
+    h.OutlineColor = col
+end
+
+local function destroyCham(model)
+    local h = chamCache[model]
+    if h then
+        pcall(function() h:Destroy() end)
+    end
+    chamCache[model] = nil
+end
+
 -- returns minX, minY, maxX, maxY of the model's box on screen, or nil
 local function screenBox(m, cam)
     local okBB, cf, size = pcall(m.GetBoundingBox, m)
@@ -453,58 +518,72 @@ local function screenBox(m, cam)
     return minX, minY, maxX, maxY
 end
 
-local function updateEsp(cam)
-    if not Drawing then return end
+-- draws esp and chams for everything in visList, filtered by vis target
+local function updateVisuals(cam)
     local keep = {}
-    local anyOn = CFG.ESPBox or CFG.ESPLine or CFG.ESPName
-    local col = getEspColor()
+    local espAny = CFG.ESPBox or CFG.ESPLine or CFG.ESPName
 
-    for _, t in ipairs(targets) do
-        local m = t.model
+    for _, v in ipairs(visList) do
+        local m = v.model
         keep[m] = true
-        local e = espFor(m)
-        if e then
-            local minX, minY, maxX, maxY
-            if anyOn and t.hum.Health > 0 and m.Parent then
-                minX, minY, maxX, maxY = screenBox(m, cam)
-            end
+        local want = visAllowed(v.kind)
 
-            if minX then
-                local midX = (minX + maxX) / 2
+        -- chams
+        local okC, errC = pcall(updateCham, m, want and CFG.Chams,
+            colorFor(v.kind, CFG.ChamsRGB))
+        if not okC then warn("uaim chams: " .. tostring(errC)) end
 
-                e.box.Visible = CFG.ESPBox
-                e.box.Color = col
-                e.box.Position = Vector2.new(minX, minY)
-                e.box.Size = Vector2.new(maxX - minX, maxY - minY)
+        -- esp
+        if Drawing then
+            local e = espFor(m)
+            if e then
+                local espOn = want and espAny and v.hum.Health > 0 and m.Parent
+                local minX, minY, maxX, maxY
+                if espOn then
+                    minX, minY, maxX, maxY = screenBox(m, cam)
+                end
 
-                e.line.Visible = CFG.ESPLine
-                e.line.Color = col
-                e.line.From = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y)
-                e.line.To = Vector2.new(midX, maxY)
+                if minX then
+                    local col = colorFor(v.kind, CFG.ESPRGB)
+                    local midX = (minX + maxX) / 2
 
-                local p = Players:GetPlayerFromCharacter(m)
-                local okPiv, piv = pcall(function() return m:GetPivot().Position end)
-                local dist = okPiv and math.floor((cam.CFrame.Position - piv).Magnitude) or 0
-                local text = (p and p.Name or m.Name) .. " [" .. dist .. "]"
-                local namePos = Vector2.new(midX, minY - 16)
+                    e.box.Visible = CFG.ESPBox
+                    e.box.Color = col
+                    e.box.Position = Vector2.new(minX, minY)
+                    e.box.Size = Vector2.new(maxX - minX, maxY - minY)
 
-                e.name.Visible = CFG.ESPName
-                e.name.Text = text
-                e.name.Color = col
-                e.name.Position = namePos
+                    e.line.Visible = CFG.ESPLine
+                    e.line.Color = col
+                    e.line.From = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y)
+                    e.line.To = Vector2.new(midX, maxY)
 
-                e.name2.Visible = CFG.ESPName
-                e.name2.Text = text
-                e.name2.Color = col
-                e.name2.Position = namePos + Vector2.new(1, 0)
-            else
-                hideEsp(e)
+                    local p = Players:GetPlayerFromCharacter(m)
+                    local okPiv, piv = pcall(function() return m:GetPivot().Position end)
+                    local dist = okPiv and math.floor((cam.CFrame.Position - piv).Magnitude) or 0
+                    local text = (p and p.Name or m.Name) .. " [" .. dist .. "]"
+                    local namePos = Vector2.new(midX, minY - 16)
+
+                    e.name.Visible = CFG.ESPName
+                    e.name.Text = text
+                    e.name.Color = col
+                    e.name.Position = namePos
+
+                    e.name2.Visible = CFG.ESPName
+                    e.name2.Text = text
+                    e.name2.Color = col
+                    e.name2.Position = namePos + Vector2.new(1, 0)
+                else
+                    hideEsp(e)
+                end
             end
         end
     end
 
     for m in pairs(espCache) do
         if not keep[m] then destroyEsp(m) end
+    end
+    for m in pairs(chamCache) do
+        if not keep[m] then destroyCham(m) end
     end
 end
 
@@ -863,6 +942,16 @@ cycleRow("esp color", ESP_ORDER,
 toggleRow("esp rgb", function() return CFG.ESPRGB end,
     function(v) CFG.ESPRGB = v end)
 
+-- column: visuals (chams + which group they apply to)
+newCol("visuals")
+toggleRow("chams", function() return CFG.Chams end,
+    function(v) CFG.Chams = v end)
+toggleRow("chams rgb", function() return CFG.ChamsRGB end,
+    function(v) CFG.ChamsRGB = v end)
+cycleRow("vis target", VIS_TARGETS,
+    function() return CFG.VisTarget end,
+    function(v) CFG.VisTarget = v end)
+
 -- column: kill
 newCol("kill")
 toggleRow("auto kill", function() return CFG.AutoKill end,
@@ -978,14 +1067,15 @@ local function renderStep()
         return
     end
 
-    -- magnet: while shooting, pull the shot to the nearest enemy near the crosshair.
-    -- redirects the bullet only; the camera is not moved
-    if CFG.Magnet and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
-        local mp = pickMagnet()
-        if mp then
-            silentTarget = mp
-            return
+    -- magnet owns aim while on: no camera lock, only the shot is redirected
+    -- to the nearest enemy inside the magnet radius while mouse1 is held
+    if CFG.Magnet then
+        if UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+            silentTarget = pickMagnet()
+        else
+            silentTarget = nil
         end
+        return
     end
 
     -- aimbot lock, only when fov is on
@@ -1005,11 +1095,11 @@ local function renderStep()
     end
 end
 
-local function runRender()
+local function runVisuals()
     local cam = Workspace.CurrentCamera
     if cam then
-        local okEsp, errEsp = pcall(updateEsp, cam)
-        if not okEsp then warn("uaim esp: " .. tostring(errEsp)) end
+        local ok, err = pcall(updateVisuals, cam)
+        if not ok then warn("uaim visuals: " .. tostring(err)) end
     end
 end
 
@@ -1019,7 +1109,7 @@ RunService:BindToRenderStep(BIND, Enum.RenderPriority.Last.Value, function()
         lastRenderErr = err
         warn("uaim render: " .. tostring(err))
     end
-    runRender()
+    runVisuals()
 end)
 
 -- unload
@@ -1033,6 +1123,7 @@ if getgenv then
         RunService:UnbindFromRenderStep(BIND)
         for _, c in ipairs(conns) do c:Disconnect() end
         for m in pairs(espCache) do destroyEsp(m) end
+        for m in pairs(chamCache) do destroyCham(m) end
         CFG.Invisible = false
         CFG.Fly = false
         CFG.Speed = false
@@ -1041,6 +1132,8 @@ if getgenv then
         CFG.AimFire = false
         CFG.Magnet = false
         CFG.BodyAim = false
+        CFG.Chams = false
+        CFG.ChamsRGB = false
         applyInvis(LP.Character)
         local hum = getHumRoot()
         if hum then
