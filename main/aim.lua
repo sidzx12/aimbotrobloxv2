@@ -1,4 +1,4 @@
--- uaim v5 | menu + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire | delta / any luau executor
+-- uaim v6 | menu + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + speed + jump + fly | delta / any luau executor
 if getgenv and getgenv().__uaim_unload then
     pcall(getgenv().__uaim_unload)
 end
@@ -23,6 +23,18 @@ local CFG = {
     TeamCheck = true,
     NPCs = true,
     WallCheck = false,
+    Speed = false,
+    WalkSpeed = 16,
+    WalkMin = 16,
+    WalkMax = 200,
+    Jump = false,
+    JumpPower = 50,
+    JumpMin = 50,
+    JumpMax = 300,
+    Fly = false,
+    FlySpeed = 60,
+    FlyMin = 10,
+    FlyMax = 300,
     MenuKey = Enum.KeyCode.RightShift,
     ToggleKey = Enum.KeyCode.RightAlt,
 }
@@ -38,6 +50,7 @@ local lastAmmo = 0
 local silentTarget = nil
 local ammoVal = {}
 local ammoAttr = {}
+local origWalk, origJump = 16, 50
 
 local function refreshAll()
     for _, f in ipairs(refreshers) do f() end
@@ -57,6 +70,11 @@ end
 
 local function watchChar(char)
     applyInvis(char)
+    local hum = char:WaitForChild("Humanoid", 5)
+    if hum then
+        origWalk = hum.WalkSpeed
+        origJump = hum.JumpPower
+    end
     table.insert(conns, char.DescendantAdded:Connect(setInvisPart))
 end
 
@@ -229,6 +247,43 @@ local function pinAmmo()
     end
 end
 
+-- movement: speed, jump, fly
+local function getHumRoot()
+    local char = LP.Character
+    if not char then return nil, nil end
+    return char:FindFirstChildOfClass("Humanoid"), char:FindFirstChild("HumanoidRootPart")
+end
+
+local function movementStep()
+    local hum, root = getHumRoot()
+    if not hum or hum.Health <= 0 then return end
+
+    if CFG.Speed then
+        hum.WalkSpeed = CFG.WalkSpeed
+    end
+    if CFG.Jump then
+        hum.UseJumpPower = true
+        hum.JumpPower = CFG.JumpPower
+    end
+
+    if CFG.Fly and root then
+        local move = hum.MoveDirection
+        local vy = 0
+        if UIS:IsKeyDown(Enum.KeyCode.Space) then
+            vy = 1
+        elseif UIS:IsKeyDown(Enum.KeyCode.LeftControl) then
+            vy = -1
+        end
+        root.AssemblyLinearVelocity = Vector3.new(
+            move.X * CFG.FlySpeed,
+            vy * CFG.FlySpeed,
+            move.Z * CFG.FlySpeed
+        )
+    end
+end
+
+table.insert(conns, RunService.Heartbeat:Connect(movementStep))
+
 -- menu gui (parented first, so everything below is visible)
 local gui = Instance.new("ScreenGui")
 gui.Name = "uaim_menu"
@@ -267,7 +322,7 @@ stroke.Parent = ring
 
 local frame = Instance.new("Frame")
 frame.Name = "main"
-frame.Size = UDim2.fromOffset(230, 330)
+frame.Size = UDim2.fromOffset(230, 470)
 frame.Position = UDim2.fromOffset(40, 200)
 frame.BackgroundColor3 = Color3.fromRGB(20, 20, 24)
 frame.BorderSizePixel = 0
@@ -427,6 +482,33 @@ toggleRow("invisible", function() return CFG.Invisible end,
         CFG.Invisible = v
         applyInvis(LP.Character)
     end)
+toggleRow("speed", function() return CFG.Speed end,
+    function(v)
+        CFG.Speed = v
+        if not v then
+            local hum = getHumRoot()
+            if hum then hum.WalkSpeed = origWalk end
+        end
+    end)
+stepRow("walk speed", function() return CFG.WalkSpeed end,
+    function(v) CFG.WalkSpeed = v end, 2, CFG.WalkMin, CFG.WalkMax,
+    function(v) return tostring(math.floor(v)) end)
+toggleRow("jump", function() return CFG.Jump end,
+    function(v)
+        CFG.Jump = v
+        if not v then
+            local hum = getHumRoot()
+            if hum then hum.JumpPower = origJump end
+        end
+    end)
+stepRow("jump power", function() return CFG.JumpPower end,
+    function(v) CFG.JumpPower = v end, 5, CFG.JumpMin, CFG.JumpMax,
+    function(v) return tostring(math.floor(v)) end)
+toggleRow("fly", function() return CFG.Fly end,
+    function(v) CFG.Fly = v end)
+stepRow("fly speed", function() return CFG.FlySpeed end,
+    function(v) CFG.FlySpeed = v end, 5, CFG.FlyMin, CFG.FlyMax,
+    function(v) return tostring(math.floor(v)) end)
 
 -- input
 table.insert(conns, UIS.InputBegan:Connect(function(input, gp)
@@ -480,7 +562,15 @@ if getgenv then
         RunService:UnbindFromRenderStep(BIND)
         for _, c in ipairs(conns) do c:Disconnect() end
         CFG.Invisible = false
+        CFG.Fly = false
+        CFG.Speed = false
+        CFG.Jump = false
         applyInvis(LP.Character)
+        local hum = getHumRoot()
+        if hum then
+            hum.WalkSpeed = origWalk
+            hum.JumpPower = origJump
+        end
         gui:Destroy()
         ringGui:Destroy()
     end
