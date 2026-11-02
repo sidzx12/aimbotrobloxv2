@@ -1,4 +1,4 @@
--- uaim v21 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + fire delay + magnet + body aim + speed + jump + fly(F) + esp box/line/bold name + esp color/rgb + chams(hologram) + chams rgb + vis target + auto kill | delta / any luau executor
+-- uaim v22 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + fire delay + magnet + body aim + speed + jump + fly(F) + esp box/line/bold name + esp color/rgb + esp target + chams(hologram) + chams rgb + chams target + auto kill | delta / any luau executor
 if getgenv and getgenv().__uaim_unload then
     pcall(getgenv().__uaim_unload)
 end
@@ -49,9 +49,10 @@ local CFG = {
     ESPName = false,
     ESPColor = "red",       -- name from ESP_ORDER
     ESPRGB = false,         -- cycles hue every frame
+    ESPTarget = "enemies",  -- "enemies" | "friends" | "all"
     Chams = false,          -- hologram highlight through walls
     ChamsRGB = false,       -- cycles hue every frame for chams
-    VisTarget = "enemies",  -- "enemies" | "friends" | "all"
+    ChamsTarget = "enemies",-- "enemies" | "friends" | "all"
     AutoKill = false,       -- teleport behind nearest enemy, aim camera, fire
     MenuKey = Enum.KeyCode.RightShift,
     ToggleKey = Enum.KeyCode.RightAlt,
@@ -185,11 +186,10 @@ local function kindOf(model)
     return "enemy"
 end
 
--- does the vis target setting include this kind
-local function visAllowed(kind)
-    local t = CFG.VisTarget
-    if t == "all" then return true end
-    if t == "enemies" then return kind == "enemy" or kind == "npc" end
+-- does a target setting ("enemies" | "friends" | "all") include this kind
+local function visAllowed(kind, setting)
+    if setting == "all" then return true end
+    if setting == "enemies" then return kind == "enemy" or kind == "npc" end
     return kind == "friend"
 end
 
@@ -519,7 +519,7 @@ local function screenBox(m, cam)
     return minX, minY, maxX, maxY
 end
 
--- draws esp and chams for everything in visList, filtered by vis target
+-- draws esp and chams for visList. each has its own target setting
 local function updateVisuals(cam)
     local keep = {}
     local espAny = CFG.ESPBox or CFG.ESPLine or CFG.ESPName
@@ -527,18 +527,19 @@ local function updateVisuals(cam)
     for _, v in ipairs(visList) do
         local m = v.model
         keep[m] = true
-        local want = visAllowed(v.kind)
 
-        -- chams
-        local okC, errC = pcall(updateCham, m, want and CFG.Chams,
+        -- chams: own target setting
+        local wantCham = visAllowed(v.kind, CFG.ChamsTarget)
+        local okC, errC = pcall(updateCham, m, wantCham and CFG.Chams,
             colorFor(v.kind, CFG.ChamsRGB))
         if not okC then warn("uaim chams: " .. tostring(errC)) end
 
-        -- esp
+        -- esp: own target setting
         if Drawing then
             local e = espFor(m)
             if e then
-                local espOn = want and espAny and v.hum.Health > 0 and m.Parent
+                local wantEsp = visAllowed(v.kind, CFG.ESPTarget)
+                local espOn = wantEsp and espAny and v.hum.Health > 0 and m.Parent
                 local minX, minY, maxX, maxY
                 if espOn then
                     minX, minY, maxX, maxY = screenBox(m, cam)
@@ -924,16 +925,16 @@ sliderRow("magnet radius", function() return CFG.MagnetRadius end,
 toggleRow("body aim", function() return CFG.BodyAim end,
     function(v) CFG.BodyAim = v end)
 
--- column: esp + chams (vis target controls both)
+-- column: esp (its own target setting)
 newCol("esp")
 toggleRow("invisible", function() return CFG.Invisible end,
     function(v)
         CFG.Invisible = v
         applyInvis(LP.Character)
     end)
-cycleRow("vis target", VIS_TARGETS,
-    function() return CFG.VisTarget end,
-    function(v) CFG.VisTarget = v end)
+cycleRow("esp target", VIS_TARGETS,
+    function() return CFG.ESPTarget end,
+    function(v) CFG.ESPTarget = v end)
 toggleRow("esp box", function() return CFG.ESPBox end,
     function(v) CFG.ESPBox = v end)
 toggleRow("esp line", function() return CFG.ESPLine end,
@@ -945,8 +946,14 @@ cycleRow("esp color", ESP_ORDER,
     function(v) CFG.ESPColor = v end)
 toggleRow("esp rgb", function() return CFG.ESPRGB end,
     function(v) CFG.ESPRGB = v end)
+
+-- column: chams (its own target setting)
+newCol("chams")
 toggleRow("chams", function() return CFG.Chams end,
     function(v) CFG.Chams = v end)
+cycleRow("chams target", VIS_TARGETS,
+    function() return CFG.ChamsTarget end,
+    function(v) CFG.ChamsTarget = v end)
 toggleRow("chams rgb", function() return CFG.ChamsRGB end,
     function(v) CFG.ChamsRGB = v end)
 
