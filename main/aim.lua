@@ -1,4 +1,4 @@
--- uaim v15 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire(auto fire) + speed + jump + fly(F) + esp box/line/bold name + esp color/rgb + auto kill | delta / any luau executor
+-- uaim v16 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + fire delay + speed + jump + fly(F) + esp box/line/bold name + esp color/rgb + auto kill | delta / any luau executor
 if getgenv and getgenv().__uaim_unload then
     pcall(getgenv().__uaim_unload)
 end
@@ -19,6 +19,9 @@ local CFG = {
     Silent = false,         -- redirect shots while mouse1 held
     AimKill = false,        -- silent aim, no key needed
     AimFire = false,        -- aimbot lock + automatic fire
+    FireDelay = 0.3,        -- seconds between shots (aimfire + auto kill)
+    FireMin = 0.1,
+    FireMax = 1.0,
     Invisible = false,
     TeamCheck = true,
     NPCs = true,
@@ -41,7 +44,7 @@ local CFG = {
     ESPName = false,
     ESPColor = "red",       -- name from ESP_ORDER
     ESPRGB = false,         -- cycles hue every frame
-    AutoKill = false,       -- teleport behind nearest enemy and fire repeatedly
+    AutoKill = false,       -- teleport behind nearest enemy and fire
     MenuKey = Enum.KeyCode.RightShift,
     ToggleKey = Enum.KeyCode.RightAlt,
 }
@@ -311,15 +314,14 @@ local function nearestEnemy()
     return best
 end
 
-local function fireOnce()
+-- one shot through the held tool only. no mouse1click, so a shot can't register twice
+local function fireOnce(now)
+    if now - lastFire < CFG.FireDelay then return end
     local char = LP.Character
     local tool = char and char:FindFirstChildOfClass("Tool")
-    if tool then
-        pcall(function() tool:Activate() end)
-    end
-    if typeof(mouse1click) == "function" then
-        pcall(mouse1click)
-    end
+    if not tool then return end
+    lastFire = now
+    pcall(function() tool:Activate() end)
 end
 
 -- esp (Drawing API). bold name = two draws offset by 1px
@@ -746,6 +748,7 @@ local function sliderRow(label, get, set, min, max, step, fmt)
 end
 
 local function fmtInt(v) return tostring(math.floor(v)) end
+local function fmtSec(v) return string.format("%.2f", v) end
 
 -- column: aim
 newCol("aim")
@@ -764,6 +767,8 @@ toggleRow("aimkill", function() return CFG.AimKill end,
     function(v) CFG.AimKill = v end)
 toggleRow("aimfire", function() return CFG.AimFire end,
     function(v) CFG.AimFire = v end)
+sliderRow("fire delay", function() return CFG.FireDelay end,
+    function(v) CFG.FireDelay = v end, CFG.FireMin, CFG.FireMax, 0.05, fmtSec)
 
 -- column: esp + invisible
 newCol("esp")
@@ -870,10 +875,7 @@ local function autoKillStep(now)
         lastTeleport = now
     end
 
-    if now - lastFire > 0.15 then
-        fireOnce()
-        lastFire = now
-    end
+    fireOnce(now)
     return goal
 end
 
@@ -909,10 +911,9 @@ local function renderStep()
         local lockOn = (CFG.Aimbot or CFG.AimFire) and CFG.FOVEnabled
         local tgt = lockOn and pickTarget() or nil
 
-        -- aimfire shoots automatically while a target is in the fov
-        if tgt and CFG.AimFire and now - lastFire > 0.1 then
-            fireOnce()
-            lastFire = now
+        -- aimfire shoots only while a target is locked in the fov
+        if tgt and CFG.AimFire then
+            fireOnce(now)
         end
 
         local silentOn = tgt ~= nil and (CFG.AimKill
