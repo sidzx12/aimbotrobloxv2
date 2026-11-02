@@ -31,7 +31,6 @@ local CFG = {
     BodyAim = false,        -- torso only, for lock + magnet + fire (ignores head)
     Invisible = false,
     TeamCheck = true,
-    NPCs = true,
     WallCheck = false,
     Speed = false,
     WalkSpeed = 16,
@@ -66,7 +65,7 @@ local BIND = "sidzx12_loop"
 local alive = true
 local conns = {}
 local refreshers = {}
-local targets = {}      -- combat targets (enemies by team/npc rules)
+local targets = {}      -- combat targets: enemy players only
 local visList = {}      -- visual targets: { hum, model, kind }
 local lastScan = 0
 local lastFire = 0
@@ -197,11 +196,12 @@ local function visAllowed(kind, setting)
     return kind == "friend"
 end
 
--- combat targeting
+-- combat targeting: only real enemy players. npcs never enter `targets`,
+-- so aimbot / silent / magnet / aimfire / autokill all skip them — they
+-- only show up as pink esp/chams. teammates excluded when TeamCheck is on.
 local function isEnemy(model)
     local p = Players:GetPlayerFromCharacter(model)
-    if not p then return CFG.NPCs end
-    if p == LP then return false end
+    if not p or p == LP then return false end
     if CFG.TeamCheck and LP.Team and p.Team == LP.Team then return false end
     return true
 end
