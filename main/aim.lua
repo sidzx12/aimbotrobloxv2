@@ -1,4 +1,4 @@
--- uaim v13 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + speed + jump + fly(F) + esp box/line/name + auto kill | delta / any luau executor
+-- uaim v14 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + speed + jump + fly(F) + esp box/line/bold name + esp color/rgb + auto kill | delta / any luau executor
 if getgenv and getgenv().__uaim_unload then
     pcall(getgenv().__uaim_unload)
 end
@@ -39,6 +39,8 @@ local CFG = {
     ESPBox = false,
     ESPLine = false,
     ESPName = false,
+    ESPColor = "red",       -- name from ESP_ORDER
+    ESPRGB = false,         -- cycles hue every frame
     AutoKill = false,       -- teleport behind nearest enemy and fire repeatedly
     MenuKey = Enum.KeyCode.RightShift,
     ToggleKey = Enum.KeyCode.RightAlt,
@@ -67,6 +69,26 @@ local CORNERS = {
     Vector3.new(1, -1, -1),  Vector3.new(1, -1, 1),
     Vector3.new(1, 1, -1),   Vector3.new(1, 1, 1),
 }
+
+-- esp color presets, in cycle order
+local ESP_ORDER = { "red", "orange", "yellow", "green", "cyan", "blue", "magenta", "white" }
+local ESP_COLORS = {
+    red = Color3.fromRGB(255, 80, 80),
+    orange = Color3.fromRGB(255, 150, 60),
+    yellow = Color3.fromRGB(255, 230, 80),
+    green = Color3.fromRGB(90, 255, 120),
+    cyan = Color3.fromRGB(80, 230, 255),
+    blue = Color3.fromRGB(90, 140, 255),
+    magenta = Color3.fromRGB(255, 90, 230),
+    white = Color3.fromRGB(255, 255, 255),
+}
+
+local function getEspColor()
+    if CFG.ESPRGB then
+        return Color3.fromHSV((os.clock() * 0.4) % 1, 1, 1)
+    end
+    return ESP_COLORS[CFG.ESPColor] or ESP_COLORS.red
+end
 
 local function refreshAll()
     for _, f in ipairs(refreshers) do f() end
@@ -337,7 +359,7 @@ local function fireOnce()
     end
 end
 
--- esp (Drawing API)
+-- esp (Drawing API). bold name = two draws offset by 1px
 local function espFor(model)
     if not Drawing then return nil end
     local e = espCache[model]
@@ -346,16 +368,22 @@ local function espFor(model)
         box = Drawing.new("Square"),
         line = Drawing.new("Line"),
         name = Drawing.new("Text"),
+        name2 = Drawing.new("Text"),
     }
     e.box.Thickness = 1
     e.box.Filled = false
-    e.box.Color = Color3.fromRGB(255, 80, 80)
     e.line.Thickness = 1
-    e.line.Color = Color3.fromRGB(255, 80, 80)
+
     e.name.Size = 14
     e.name.Center = true
     e.name.Outline = true
     e.name.Color = Color3.fromRGB(255, 255, 255)
+
+    e.name2.Size = 14
+    e.name2.Center = true
+    e.name2.Outline = false
+    e.name2.Color = Color3.fromRGB(255, 255, 255)
+
     espCache[model] = e
     return e
 end
@@ -364,6 +392,7 @@ local function hideEsp(e)
     e.box.Visible = false
     e.line.Visible = false
     e.name.Visible = false
+    e.name2.Visible = false
 end
 
 local function destroyEsp(model)
@@ -372,6 +401,7 @@ local function destroyEsp(model)
     e.box:Remove()
     e.line:Remove()
     e.name:Remove()
+    e.name2:Remove()
     espCache[model] = nil
 end
 
@@ -397,6 +427,7 @@ local function updateEsp(cam)
     if not Drawing then return end
     local keep = {}
     local anyOn = CFG.ESPBox or CFG.ESPLine or CFG.ESPName
+    local col = getEspColor()
 
     for _, t in ipairs(targets) do
         local m = t.model
@@ -410,20 +441,32 @@ local function updateEsp(cam)
 
             if minX then
                 local midX = (minX + maxX) / 2
+
                 e.box.Visible = CFG.ESPBox
+                e.box.Color = col
                 e.box.Position = Vector2.new(minX, minY)
                 e.box.Size = Vector2.new(maxX - minX, maxY - minY)
 
                 e.line.Visible = CFG.ESPLine
+                e.line.Color = col
                 e.line.From = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y)
                 e.line.To = Vector2.new(midX, maxY)
 
                 local p = Players:GetPlayerFromCharacter(m)
                 local okPiv, piv = pcall(function() return m:GetPivot().Position end)
                 local dist = okPiv and math.floor((cam.CFrame.Position - piv).Magnitude) or 0
+                local text = (p and p.Name or m.Name) .. " [" .. dist .. "]"
+                local namePos = Vector2.new(midX, minY - 16)
+
                 e.name.Visible = CFG.ESPName
-                e.name.Text = (p and p.Name or m.Name) .. " [" .. dist .. "]"
-                e.name.Position = Vector2.new(midX, minY - 16)
+                e.name.Text = text
+                e.name.Color = col
+                e.name.Position = namePos
+
+                e.name2.Visible = CFG.ESPName
+                e.name2.Text = text
+                e.name2.Color = col
+                e.name2.Position = namePos + Vector2.new(1, 0)
             else
                 hideEsp(e)
             end
@@ -772,6 +815,11 @@ toggleRow("esp line", function() return CFG.ESPLine end,
     function(v) CFG.ESPLine = v end)
 toggleRow("esp name", function() return CFG.ESPName end,
     function(v) CFG.ESPName = v end)
+cycleRow("esp color", ESP_ORDER,
+    function() return CFG.ESPColor end,
+    function(v) CFG.ESPColor = v end)
+toggleRow("esp rgb", function() return CFG.ESPRGB end,
+    function(v) CFG.ESPRGB = v end)
 
 -- column: kill
 newCol("kill")
