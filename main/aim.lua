@@ -1,4 +1,4 @@
--- uaim v11 | menu + scroll + sliders + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + speed + jump + fly(F) + esp box/line/name + auto kill | delta / any luau executor
+-- uaim v12 | menu + scroll + sliders + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + speed + jump + fly(F) + esp box/line/name + auto kill | delta / any luau executor
 if getgenv and getgenv().__uaim_unload then
     pcall(getgenv().__uaim_unload)
 end
@@ -305,7 +305,10 @@ local function movementStep()
     end
 end
 
-table.insert(conns, RunService.Heartbeat:Connect(movementStep))
+table.insert(conns, RunService.Heartbeat:Connect(function()
+    local ok, err = pcall(movementStep)
+    if not ok then warn("uaim move: " .. tostring(err)) end
+end))
 
 -- auto kill helpers
 local function nearestEnemy()
@@ -788,6 +791,26 @@ table.insert(conns, UIS.InputBegan:Connect(function(input, gp)
     end
 end))
 
+-- auto kill step, isolated so an error here can't stop the rest of the loop
+local function autoKillStep(now)
+    local t = nearestEnemy()
+    local _, myRoot = getHumRoot()
+    local r = t and rootOf(t.model)
+    if not (myRoot and r) then return nil end
+
+    local goal = aimPos(t.model)
+    if not goal then return nil end
+
+    myRoot.CFrame = r.CFrame * CFrame.new(0, 0, 3)
+    myRoot.AssemblyLinearVelocity = Vector3.zero
+
+    if now - lastFire > 0.15 then
+        fireOnce()
+        lastFire = now
+    end
+    return goal
+end
+
 -- main loop (after the game's camera scripts so nothing overwrites the lock)
 RunService:BindToRenderStep(BIND, Enum.RenderPriority.Last.Value, function()
     local cam = Workspace.CurrentCamera
@@ -806,24 +829,17 @@ RunService:BindToRenderStep(BIND, Enum.RenderPriority.Last.Value, function()
     ring.Size = UDim2.fromOffset(CFG.FOV * 2, CFG.FOV * 2)
     ring.Visible = CFG.FOVEnabled
 
-    -- auto kill: teleport behind the nearest enemy, aim at them, fire
     local akGoal = nil
     if CFG.AutoKill then
-        local t = nearestEnemy()
-        local _, myRoot = getHumRoot()
-        local r = t and rootOf(t.model)
-        if myRoot and r then
-            akGoal = aimPos(t.model)
-            myRoot.CFrame = r.CFrame * CFrame.new(0, 0, 3)
-            myRoot.AssemblyLinearVelocity = Vector3.zero
-            if now - lastFire > 0.15 then
-                fireOnce()
-                lastFire = now
-            end
+        local ok, res = pcall(autoKillStep, now)
+        if ok then
+            akGoal = res
+        else
+            warn("uaim autokill: " .. tostring(res))
         end
     end
 
-    if akGoal then
+    if akGoal and (akGoal - cam.CFrame.Position).Magnitude > 0.1 then
         cam.CFrame = CFrame.lookAt(cam.CFrame.Position, akGoal)
         silentTarget = akGoal
     else
@@ -842,7 +858,8 @@ RunService:BindToRenderStep(BIND, Enum.RenderPriority.Last.Value, function()
         end
     end
 
-    updateEsp(cam)
+    local okEsp, errEsp = pcall(updateEsp, cam)
+    if not okEsp then warn("uaim esp: " .. tostring(errEsp)) end
 end)
 
 -- unload
