@@ -1,4 +1,4 @@
--- uaim v23 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + fire delay + magnet + body aim + speed + jump + fly(F) + esp box/line/bold name + esp color/rgb + esp target + chams(hologram) + chams color/rgb + chams target + auto kill | delta / any luau executor
+-- uaim v24 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + fire delay + magnet + body aim + speed + jump + fly(F) + esp box/line/bold name + esp color/rgb + esp target + chams(hologram) + chams color/rgb + chams target + auto kill | delta / any luau executor
 if getgenv and getgenv().__uaim_unload then
     pcall(getgenv().__uaim_unload)
 end
@@ -455,6 +455,19 @@ local function espFor(model)
     return e
 end
 
+-- removes the drawings entirely, so nothing can stay on screen
+local function destroyEsp(model)
+    local e = espCache[model]
+    if not e then return end
+    pcall(function()
+        e.box:Remove()
+        e.line:Remove()
+        e.name:Remove()
+        e.name2:Remove()
+    end)
+    espCache[model] = nil
+end
+
 local function hideEsp(e)
     e.box.Visible = false
     e.line.Visible = false
@@ -462,24 +475,10 @@ local function hideEsp(e)
     e.name2.Visible = false
 end
 
-local function destroyEsp(model)
-    local e = espCache[model]
-    if not e then return end
-    e.box:Remove()
-    e.line:Remove()
-    e.name:Remove()
-    e.name2:Remove()
-    espCache[model] = nil
-end
-
 -- chams: a see-through hologram. a Highlight with a mostly transparent fill
 -- and a soft outline, drawn through walls
-local function updateCham(model, show, col)
+local function updateCham(model, col)
     local h = chamCache[model]
-    if not show then
-        if h then h.Enabled = false end
-        return
-    end
     if not h then
         h = Instance.new("Highlight")
         h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
@@ -494,6 +493,7 @@ local function updateCham(model, show, col)
     h.OutlineColor = col
 end
 
+-- removes the highlight instance entirely
 local function destroyCham(model)
     local h = chamCache[model]
     if h then
@@ -520,73 +520,66 @@ local function screenBox(m, cam)
     return minX, minY, maxX, maxY
 end
 
--- draws esp and chams for visList. each has its own target and color setting
+-- draws esp and chams for visList. anything not wanted is destroyed, not just hidden
 local function updateVisuals(cam)
-    local keep = {}
     local espAny = CFG.ESPBox or CFG.ESPLine or CFG.ESPName
+    local keepEsp, keepCham = {}, {}
 
     for _, v in ipairs(visList) do
         local m = v.model
-        keep[m] = true
 
-        -- chams: own target, own color
-        local wantCham = visAllowed(v.kind, CFG.ChamsTarget)
-        local okC, errC = pcall(updateCham, m, wantCham and CFG.Chams,
-            colorFor(v.kind, CFG.ChamsRGB, CFG.ChamsColor))
-        if not okC then warn("uaim chams: " .. tostring(errC)) end
+        -- chams: only when chams is on AND this kind matches chams target
+        if CFG.Chams and visAllowed(v.kind, CFG.ChamsTarget) then
+            keepCham[m] = true
+            local okC, errC = pcall(updateCham, m, colorFor(v.kind, CFG.ChamsRGB, CFG.ChamsColor))
+            if not okC then warn("uaim chams: " .. tostring(errC)) end
+        end
 
-        -- esp: own target, own color
-        if Drawing then
-            local e = espFor(m)
-            if e then
-                local wantEsp = visAllowed(v.kind, CFG.ESPTarget)
-                local espOn = wantEsp and espAny and v.hum.Health > 0 and m.Parent
-                local minX, minY, maxX, maxY
-                if espOn then
-                    minX, minY, maxX, maxY = screenBox(m, cam)
-                end
+        -- esp: only when at least one esp box/line/name is on AND this kind matches esp target
+        if Drawing and espAny and visAllowed(v.kind, CFG.ESPTarget)
+            and v.hum.Health > 0 and m.Parent then
+            local minX, minY, maxX, maxY = screenBox(m, cam)
+            if minX then
+                keepEsp[m] = true
+                local e = espFor(m)
+                local col = colorFor(v.kind, CFG.ESPRGB, CFG.ESPColor)
+                local midX = (minX + maxX) / 2
 
-                if minX then
-                    local col = colorFor(v.kind, CFG.ESPRGB, CFG.ESPColor)
-                    local midX = (minX + maxX) / 2
+                e.box.Visible = CFG.ESPBox
+                e.box.Color = col
+                e.box.Position = Vector2.new(minX, minY)
+                e.box.Size = Vector2.new(maxX - minX, maxY - minY)
 
-                    e.box.Visible = CFG.ESPBox
-                    e.box.Color = col
-                    e.box.Position = Vector2.new(minX, minY)
-                    e.box.Size = Vector2.new(maxX - minX, maxY - minY)
+                e.line.Visible = CFG.ESPLine
+                e.line.Color = col
+                e.line.From = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y)
+                e.line.To = Vector2.new(midX, maxY)
 
-                    e.line.Visible = CFG.ESPLine
-                    e.line.Color = col
-                    e.line.From = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y)
-                    e.line.To = Vector2.new(midX, maxY)
+                local p = Players:GetPlayerFromCharacter(m)
+                local okPiv, piv = pcall(function() return m:GetPivot().Position end)
+                local dist = okPiv and math.floor((cam.CFrame.Position - piv).Magnitude) or 0
+                local text = (p and p.Name or m.Name) .. " [" .. dist .. "]"
+                local namePos = Vector2.new(midX, minY - 16)
 
-                    local p = Players:GetPlayerFromCharacter(m)
-                    local okPiv, piv = pcall(function() return m:GetPivot().Position end)
-                    local dist = okPiv and math.floor((cam.CFrame.Position - piv).Magnitude) or 0
-                    local text = (p and p.Name or m.Name) .. " [" .. dist .. "]"
-                    local namePos = Vector2.new(midX, minY - 16)
+                e.name.Visible = CFG.ESPName
+                e.name.Text = text
+                e.name.Color = col
+                e.name.Position = namePos
 
-                    e.name.Visible = CFG.ESPName
-                    e.name.Text = text
-                    e.name.Color = col
-                    e.name.Position = namePos
-
-                    e.name2.Visible = CFG.ESPName
-                    e.name2.Text = text
-                    e.name2.Color = col
-                    e.name2.Position = namePos + Vector2.new(1, 0)
-                else
-                    hideEsp(e)
-                end
+                e.name2.Visible = CFG.ESPName
+                e.name2.Text = text
+                e.name2.Color = col
+                e.name2.Position = namePos + Vector2.new(1, 0)
             end
         end
     end
 
+    -- sweep: anything not wanted this frame is removed completely
     for m in pairs(espCache) do
-        if not keep[m] then destroyEsp(m) end
+        if not keepEsp[m] then destroyEsp(m) end
     end
     for m in pairs(chamCache) do
-        if not keep[m] then destroyCham(m) end
+        if not keepCham[m] then destroyCham(m) end
     end
 end
 
