@@ -1,4 +1,4 @@
--- uaim v24 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + fire delay + magnet + body aim + speed + jump + fly(F) + esp box/line/bold name + esp color/rgb + esp target + chams(hologram) + chams color/rgb + chams target + auto kill | delta / any luau executor
+-- uaim v25 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + fire delay + magnet + body aim + speed + jump + fly(F) + esp box/line/bold name + esp color/rgb + esp target + chams(hologram) + chams color/rgb + chams target + auto kill | delta / any luau executor
 if getgenv and getgenv().__uaim_unload then
     pcall(getgenv().__uaim_unload)
 end
@@ -8,6 +8,7 @@ local RunService = game:GetService("RunService")
 local UIS = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 local CoreGui = game:GetService("CoreGui")
+local VIM = game:GetService("VirtualInputManager")
 
 local CFG = {
     Aimbot = true,
@@ -17,9 +18,9 @@ local CFG = {
     FOVMax = 600,
     AimPart = "head",       -- "head" | "neck" | "body"
     Silent = false,         -- redirect shots while mouse1 held
-    AimKill = false,        -- silent aim, no key needed
+    AimKill = false,        -- silent aim, no key needed, fires on delay
     AimFire = false,        -- teleport behind fov enemy + auto fire, no camera
-    FireDelay = 0.3,        -- seconds between shots (aimfire + auto kill)
+    FireDelay = 0.3,        -- seconds between shots (aimfire + auto kill + aimkill)
     FireMin = 0.1,
     FireMax = 1.0,
     Magnet = false,         -- while mouse1 held, redirect shot to nearest enemy in radius
@@ -83,7 +84,8 @@ local CORNERS = {
     Vector3.new(1, 1, -1),   Vector3.new(1, 1, 1),
 }
 
--- shared color presets for esp and chams, in cycle order
+-- shared color presets for esp and chams, in cycle order.
+-- npc/bot is always pink and ignores preset + rgb.
 local COLOR_ORDER = { "red", "orange", "yellow", "green", "cyan", "blue", "magenta", "white" }
 local COLORS = {
     red = Color3.fromRGB(255, 80, 80),
@@ -98,7 +100,7 @@ local COLORS = {
 local NPC_PINK = Color3.fromRGB(255, 105, 180)
 local VIS_TARGETS = { "enemies", "friends", "all" }
 
--- color for a model. npcs are always pink; otherwise the chosen preset or rgb cycle
+-- color for a model. npcs are always pink; players use the chosen preset or rgb cycle.
 local function colorFor(kind, useRgb, presetName)
     if kind == "npc" then return NPC_PINK end
     if useRgb then
@@ -392,14 +394,22 @@ local function nearestEnemy()
     return best
 end
 
--- one shot through the held tool only, at most once per fire delay
+-- fires once per fire delay. tool -> Activate, else mouse1 click fallback
+-- for weapons that read MouseButton1 (most non-tool guns).
 local function fireOnce(now)
     if now - lastFire < CFG.FireDelay then return end
     local char = LP.Character
     local tool = char and char:FindFirstChildOfClass("Tool")
-    if not tool then return end
     lastFire = now
-    pcall(function() tool:Activate() end)
+    if tool then
+        pcall(function() tool:Activate() end)
+    else
+        pcall(function()
+            VIM:SendMouseButtonEvent(0, 0, 0, true, game, 0)
+            task.wait(0.02)
+            VIM:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+        end)
+    end
 end
 
 -- shared by auto kill and aimfire: move 3 studs behind the enemy (throttled),
@@ -468,13 +478,6 @@ local function destroyEsp(model)
     espCache[model] = nil
 end
 
-local function hideEsp(e)
-    e.box.Visible = false
-    e.line.Visible = false
-    e.name.Visible = false
-    e.name2.Visible = false
-end
-
 -- chams: a see-through hologram. a Highlight with a mostly transparent fill
 -- and a soft outline, drawn through walls
 local function updateCham(model, col)
@@ -528,7 +531,8 @@ local function updateVisuals(cam)
     for _, v in ipairs(visList) do
         local m = v.model
 
-        -- chams: only when chams is on AND this kind matches chams target
+        -- chams: only when chams is on AND this kind matches chams target.
+        -- npc is always pink via colorFor.
         if CFG.Chams and visAllowed(v.kind, CFG.ChamsTarget) then
             keepCham[m] = true
             local okC, errC = pcall(updateCham, m, colorFor(v.kind, CFG.ChamsRGB, CFG.ChamsColor))
@@ -1026,7 +1030,8 @@ local function autoKillStep(now)
     return goal
 end
 
--- one render frame. wrapped by xpcall below so errors show a traceback
+-- one render frame. every mode is evaluated; early return only when the mode
+-- owns the camera and would fight another mode's camera write.
 local function renderStep()
     local cam = Workspace.CurrentCamera
     if not cam then return end
@@ -1040,7 +1045,7 @@ local function renderStep()
     ring.Size = UDim2.fromOffset(CFG.FOV * 2, CFG.FOV * 2)
     ring.Visible = CFG.FOVEnabled
 
-    -- auto kill takes priority
+    -- autokill: teleport + fire + camera. owns the camera, so it runs alone.
     if CFG.AutoKill then
         local ok, res = pcall(autoKillStep, now)
         if ok and res then
@@ -1048,13 +1053,13 @@ local function renderStep()
                 cam.CFrame = CFrame.lookAt(cam.CFrame.Position, res)
             end
             silentTarget = res
-            return
         elseif not ok then
             warn("uaim autokill: " .. tostring(res))
         end
+        return
     end
 
-    -- aimfire: teleport behind the fov enemy and fire. camera is left alone
+    -- aimfire: teleport + fire, camera left alone
     if CFG.AimFire and CFG.FOVEnabled then
         local _, tgtModel = pickTarget()
         if tgtModel then
@@ -1065,35 +1070,42 @@ local function renderStep()
                 warn("uaim aimfire: " .. tostring(res))
             end
         end
-        silentTarget = nil
-        return
     end
 
-    -- magnet owns aim while on: no camera lock, only the shot is redirected
-    -- to the nearest enemy inside the magnet radius while mouse1 is held
-    if CFG.Magnet then
-        if UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
-            silentTarget = pickMagnet()
-        else
-            silentTarget = nil
-        end
-        return
+    -- magnet: only redirects the shot while mouse1 is held, no camera touch.
+    -- does not return, so aimbot lock below still gets a shot at the camera
+    -- when magnet isn't currently engaged.
+    local magnetTarget = nil
+    if CFG.Magnet and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+        magnetTarget = pickMagnet()
     end
 
-    -- aimbot lock, only when fov is on
-    local tgt = nil
+    -- aimbot lock + silent/aimkill
+    local lockTarget = nil
     if CFG.Aimbot and CFG.FOVEnabled then
-        tgt = pickTarget()
+        lockTarget = pickTarget()
     end
 
-    local silentOn = tgt ~= nil and (CFG.AimKill
-        or (CFG.Silent and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)))
-    silentTarget = silentOn and tgt or nil
+    -- silent redirect: aimkill fires without any mouse input; silent needs mouse1.
+    -- magnet, if engaged, wins over the lock for the shot's redirect point.
+    local redirect = magnetTarget or lockTarget
+    local silentWanted = redirect ~= nil and (
+        CFG.AimKill
+        or magnetTarget ~= nil
+        or (CFG.Silent and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1))
+    )
+    silentTarget = silentWanted and redirect or nil
 
-    -- lock straight onto the nearest enemy in fov (no smoothing).
-    -- silent/aimkill redirect the shot instead of moving the camera.
-    if tgt and not silentOn then
-        cam.CFrame = CFrame.lookAt(cam.CFrame.Position, tgt)
+    -- aimkill fires on its own on the fire delay, no tool/key required beyond holding a tool
+    if CFG.AimKill and redirect then
+        pcall(fireOnce, now)
+    end
+
+    -- camera lock: skip when magnet is engaged this frame (would fight the shot),
+    -- skip when silent-only (silent/aimkill don't move the camera).
+    local silentOnly = CFG.AimKill or CFG.Silent
+    if lockTarget and not silentOnly and not magnetTarget then
+        cam.CFrame = CFrame.lookAt(cam.CFrame.Position, lockTarget)
     end
 end
 
