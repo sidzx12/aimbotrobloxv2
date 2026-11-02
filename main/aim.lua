@@ -1,4 +1,4 @@
--- uaim v10 | menu + scroll + sliders + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + speed + jump + fly(F) | delta / any luau executor
+-- uaim v11 | menu + scroll + sliders + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + speed + jump + fly(F) + esp box/line/name + auto kill | delta / any luau executor
 if getgenv and getgenv().__uaim_unload then
     pcall(getgenv().__uaim_unload)
 end
@@ -36,6 +36,10 @@ local CFG = {
     FlyMin = 10,
     FlyMax = 300,
     FlyKey = Enum.KeyCode.F,
+    ESPBox = false,
+    ESPLine = false,
+    ESPName = false,
+    AutoKill = false,       -- teleport behind nearest enemy and fire repeatedly
     MenuKey = Enum.KeyCode.RightShift,
     ToggleKey = Enum.KeyCode.RightAlt,
 }
@@ -48,11 +52,20 @@ local refreshers = {}
 local targets = {}
 local lastScan = 0
 local lastAmmo = 0
+local lastFire = 0
 local silentTarget = nil
 local ammoVal = {}
 local ammoAttr = {}
 local origWalk, origJump = 16, 50
 local flying = false
+local espCache = {}
+
+local CORNERS = {
+    Vector3.new(-1, -1, -1), Vector3.new(-1, -1, 1),
+    Vector3.new(-1, 1, -1),  Vector3.new(-1, 1, 1),
+    Vector3.new(1, -1, -1),  Vector3.new(1, -1, 1),
+    Vector3.new(1, 1, -1),   Vector3.new(1, 1, 1),
+}
 
 local function refreshAll()
     for _, f in ipairs(refreshers) do f() end
@@ -82,6 +95,13 @@ end
 
 if LP.Character then watchChar(LP.Character) end
 table.insert(conns, LP.CharacterAdded:Connect(watchChar))
+
+-- body parts
+local function rootOf(model)
+    return model:FindFirstChild("HumanoidRootPart")
+        or model:FindFirstChild("UpperTorso")
+        or model:FindFirstChild("Torso")
+end
 
 -- aim position per part choice
 local function aimPos(model)
@@ -286,6 +306,123 @@ local function movementStep()
 end
 
 table.insert(conns, RunService.Heartbeat:Connect(movementStep))
+
+-- auto kill helpers
+local function nearestEnemy()
+    local _, myRoot = getHumRoot()
+    if not myRoot then return nil end
+    local best, bestD = nil, math.huge
+    for _, t in ipairs(targets) do
+        local r = rootOf(t.model)
+        if t.hum.Health > 0 and r then
+            local d = (r.Position - myRoot.Position).Magnitude
+            if d < bestD then best, bestD = t, d end
+        end
+    end
+    return best
+end
+
+local function fireOnce()
+    local char = LP.Character
+    local tool = char and char:FindFirstChildOfClass("Tool")
+    if tool then
+        pcall(function() tool:Activate() end)
+    end
+    if typeof(mouse1click) == "function" then
+        pcall(mouse1click)
+    end
+end
+
+-- esp (Drawing API)
+local function espFor(model)
+    if not Drawing then return nil end
+    local e = espCache[model]
+    if e then return e end
+    e = {
+        box = Drawing.new("Square"),
+        line = Drawing.new("Line"),
+        name = Drawing.new("Text"),
+    }
+    e.box.Thickness = 1
+    e.box.Filled = false
+    e.box.Color = Color3.fromRGB(255, 80, 80)
+    e.line.Thickness = 1
+    e.line.Color = Color3.fromRGB(255, 80, 80)
+    e.name.Size = 14
+    e.name.Center = true
+    e.name.Outline = true
+    e.name.Color = Color3.fromRGB(255, 255, 255)
+    espCache[model] = e
+    return e
+end
+
+local function hideEsp(e)
+    e.box.Visible = false
+    e.line.Visible = false
+    e.name.Visible = false
+end
+
+local function destroyEsp(model)
+    local e = espCache[model]
+    if not e then return end
+    e.box:Remove()
+    e.line:Remove()
+    e.name:Remove()
+    espCache[model] = nil
+end
+
+local function updateEsp(cam)
+    if not Drawing then return end
+    local keep = {}
+    local anyOn = CFG.ESPBox or CFG.ESPLine or CFG.ESPName
+
+    for _, t in ipairs(targets) do
+        local m = t.model
+        keep[m] = true
+        local e = espFor(m)
+        if e then
+            local ok = false
+            local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
+            if anyOn and t.hum.Health > 0 and m.Parent then
+                local cf, size = m:GetBoundingBox()
+                local hx, hy, hz = size.X / 2, size.Y / 2, size.Z / 2
+                ok = true
+                for _, s in ipairs(CORNERS) do
+                    local p = cf * Vector3.new(s.X * hx, s.Y * hy, s.Z * hz)
+                    local sp = cam:WorldToViewportPoint(p)
+                    if sp.Z <= 0 then ok = false break end
+                    minX = math.min(minX, sp.X)
+                    minY = math.min(minY, sp.Y)
+                    maxX = math.max(maxX, sp.X)
+                    maxY = math.max(maxY, sp.Y)
+                end
+            end
+
+            if ok then
+                local midX = (minX + maxX) / 2
+                e.box.Visible = CFG.ESPBox
+                e.box.Position = Vector2.new(minX, minY)
+                e.box.Size = Vector2.new(maxX - minX, maxY - minY)
+
+                e.line.Visible = CFG.ESPLine
+                e.line.From = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y)
+                e.line.To = Vector2.new(midX, maxY)
+
+                local p = Players:GetPlayerFromCharacter(m)
+                local dist = math.floor((cam.CFrame.Position - m:GetPivot().Position).Magnitude)
+                e.name.Visible = CFG.ESPName
+                e.name.Text = (p and p.Name or m.Name) .. " [" .. dist .. "]"
+                e.name.Position = Vector2.new(midX, minY - 16)
+            else
+                hideEsp(e)
+            end
+        end
+    end
+
+    for m in pairs(espCache) do
+        if not keep[m] then destroyEsp(m) end
+    end
+end
 
 -- menu gui
 local gui = Instance.new("ScreenGui")
@@ -584,6 +721,14 @@ toggleRow("invisible", function() return CFG.Invisible end,
         CFG.Invisible = v
         applyInvis(LP.Character)
     end)
+toggleRow("esp box", function() return CFG.ESPBox end,
+    function(v) CFG.ESPBox = v end)
+toggleRow("esp line", function() return CFG.ESPLine end,
+    function(v) CFG.ESPLine = v end)
+toggleRow("esp name", function() return CFG.ESPName end,
+    function(v) CFG.ESPName = v end)
+toggleRow("auto kill", function() return CFG.AutoKill end,
+    function(v) CFG.AutoKill = v end)
 toggleRow("speed", function() return CFG.Speed end,
     function(v)
         CFG.Speed = v
@@ -661,19 +806,43 @@ RunService:BindToRenderStep(BIND, Enum.RenderPriority.Last.Value, function()
     ring.Size = UDim2.fromOffset(CFG.FOV * 2, CFG.FOV * 2)
     ring.Visible = CFG.FOVEnabled
 
-    -- features only arm once aimbot and fov are both on
-    local armed = CFG.Aimbot and CFG.FOVEnabled
-    local tgt = armed and pickTarget() or nil
-
-    local silentOn = tgt ~= nil and (CFG.AimKill
-        or (CFG.Silent and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)))
-    silentTarget = silentOn and tgt or nil
-
-    -- lock straight onto the nearest enemy in fov (no smoothing).
-    -- silent/aimkill redirect the shot instead of moving the camera.
-    if tgt and not silentOn then
-        cam.CFrame = CFrame.lookAt(cam.CFrame.Position, tgt)
+    -- auto kill: teleport behind the nearest enemy, aim at them, fire
+    local akGoal = nil
+    if CFG.AutoKill then
+        local t = nearestEnemy()
+        local _, myRoot = getHumRoot()
+        local r = t and rootOf(t.model)
+        if myRoot and r then
+            akGoal = aimPos(t.model)
+            myRoot.CFrame = r.CFrame * CFrame.new(0, 0, 3)
+            myRoot.AssemblyLinearVelocity = Vector3.zero
+            if now - lastFire > 0.15 then
+                fireOnce()
+                lastFire = now
+            end
+        end
     end
+
+    if akGoal then
+        cam.CFrame = CFrame.lookAt(cam.CFrame.Position, akGoal)
+        silentTarget = akGoal
+    else
+        -- features only arm once aimbot and fov are both on
+        local armed = CFG.Aimbot and CFG.FOVEnabled
+        local tgt = armed and pickTarget() or nil
+
+        local silentOn = tgt ~= nil and (CFG.AimKill
+            or (CFG.Silent and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)))
+        silentTarget = silentOn and tgt or nil
+
+        -- lock straight onto the nearest enemy in fov (no smoothing).
+        -- silent/aimkill redirect the shot instead of moving the camera.
+        if tgt and not silentOn then
+            cam.CFrame = CFrame.lookAt(cam.CFrame.Position, tgt)
+        end
+    end
+
+    updateEsp(cam)
 end)
 
 -- unload
@@ -686,10 +855,12 @@ if getgenv then
         flying = false
         RunService:UnbindFromRenderStep(BIND)
         for _, c in ipairs(conns) do c:Disconnect() end
+        for m in pairs(espCache) do destroyEsp(m) end
         CFG.Invisible = false
         CFG.Fly = false
         CFG.Speed = false
         CFG.Jump = false
+        CFG.AutoKill = false
         applyInvis(LP.Character)
         local hum = getHumRoot()
         if hum then
