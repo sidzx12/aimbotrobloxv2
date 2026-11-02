@@ -1,4 +1,4 @@
--- uaim v20 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + fire delay + magnet + body aim + speed + jump + fly(F) + esp box/line/bold name + esp color/rgb + chams + chams rgb + vis target + auto kill | delta / any luau executor
+-- uaim v21 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + fire delay + magnet + body aim + speed + jump + fly(F) + esp box/line/bold name + esp color/rgb + chams(hologram) + chams rgb + vis target + auto kill | delta / any luau executor
 if getgenv and getgenv().__uaim_unload then
     pcall(getgenv().__uaim_unload)
 end
@@ -49,7 +49,7 @@ local CFG = {
     ESPName = false,
     ESPColor = "red",       -- name from ESP_ORDER
     ESPRGB = false,         -- cycles hue every frame
-    Chams = false,          -- highlight through walls
+    Chams = false,          -- hologram highlight through walls
     ChamsRGB = false,       -- cycles hue every frame for chams
     VisTarget = "enemies",  -- "enemies" | "friends" | "all"
     AutoKill = false,       -- teleport behind nearest enemy, aim camera, fire
@@ -471,7 +471,8 @@ local function destroyEsp(model)
     espCache[model] = nil
 end
 
--- chams: a Highlight parented to the model, drawn through walls
+-- chams: a see-through hologram. a Highlight with a mostly transparent fill
+-- and a soft outline, drawn through walls
 local function updateCham(model, show, col)
     local h = chamCache[model]
     if not show then
@@ -481,8 +482,8 @@ local function updateCham(model, show, col)
     if not h then
         h = Instance.new("Highlight")
         h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        h.FillTransparency = 0.5
-        h.OutlineTransparency = 0
+        h.FillTransparency = 0.78     -- mostly see-through, hologram look
+        h.OutlineTransparency = 0.25  -- soft edge line
         chamCache[model] = h
     end
     h.Adornee = model
@@ -923,13 +924,16 @@ sliderRow("magnet radius", function() return CFG.MagnetRadius end,
 toggleRow("body aim", function() return CFG.BodyAim end,
     function(v) CFG.BodyAim = v end)
 
--- column: esp + invisible
+-- column: esp + chams (vis target controls both)
 newCol("esp")
 toggleRow("invisible", function() return CFG.Invisible end,
     function(v)
         CFG.Invisible = v
         applyInvis(LP.Character)
     end)
+cycleRow("vis target", VIS_TARGETS,
+    function() return CFG.VisTarget end,
+    function(v) CFG.VisTarget = v end)
 toggleRow("esp box", function() return CFG.ESPBox end,
     function(v) CFG.ESPBox = v end)
 toggleRow("esp line", function() return CFG.ESPLine end,
@@ -941,16 +945,10 @@ cycleRow("esp color", ESP_ORDER,
     function(v) CFG.ESPColor = v end)
 toggleRow("esp rgb", function() return CFG.ESPRGB end,
     function(v) CFG.ESPRGB = v end)
-
--- column: visuals (chams + which group they apply to)
-newCol("visuals")
 toggleRow("chams", function() return CFG.Chams end,
     function(v) CFG.Chams = v end)
 toggleRow("chams rgb", function() return CFG.ChamsRGB end,
     function(v) CFG.ChamsRGB = v end)
-cycleRow("vis target", VIS_TARGETS,
-    function() return CFG.VisTarget end,
-    function(v) CFG.VisTarget = v end)
 
 -- column: kill
 newCol("kill")
