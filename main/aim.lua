@@ -1,4 +1,4 @@
--- uaim v4 | menu + hide + fov + invisible + npc + aim part + silent + aimkill + aimfire | delta / any luau executor
+-- uaim v5 | menu + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire | delta / any luau executor
 if getgenv and getgenv().__uaim_unload then
     pcall(getgenv().__uaim_unload)
 end
@@ -11,20 +11,18 @@ local CoreGui = game:GetService("CoreGui")
 
 local CFG = {
     Aimbot = true,
-    TeamCheck = true,
-    WallCheck = true,
-    NPCs = true,
     FOVEnabled = true,
     FOV = 150,
     FOVMin = 40,
     FOVMax = 600,
-    Smoothing = 0.15,       -- 0 = snap, 0.95 = very slow
     AimPart = "head",       -- "head" | "neck" | "body"
     Silent = false,         -- redirect shots while mouse1 held
     AimKill = false,        -- silent aim, no key needed
     AimFire = false,        -- pin ammo/clip values on held tool
     Invisible = false,
-    HoldMouse2 = true,
+    TeamCheck = true,
+    NPCs = true,
+    WallCheck = false,
     MenuKey = Enum.KeyCode.RightShift,
     ToggleKey = Enum.KeyCode.RightAlt,
 }
@@ -38,8 +36,8 @@ local targets = {}
 local lastScan = 0
 local lastAmmo = 0
 local silentTarget = nil
-local ammoVal = {}     -- value instance -> highest seen
-local ammoAttr = {}    -- tool -> { attrName = highest seen }
+local ammoVal = {}
+local ammoAttr = {}
 
 local function refreshAll()
     for _, f in ipairs(refreshers) do f() end
@@ -131,6 +129,7 @@ local function visible(pos, model)
     return false
 end
 
+-- nearest enemy inside the fov circle
 local function pickTarget()
     local cam = Workspace.CurrentCamera
     local center = cam.ViewportSize / 2
@@ -153,7 +152,7 @@ local function pickTarget()
     return bestPos
 end
 
--- silent aim hook (goes inert after unload via alive flag)
+-- silent aim hook (inert after unload via alive flag)
 local oldNamecall
 local okHook, errHook = pcall(function()
     oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
@@ -230,12 +229,25 @@ local function pinAmmo()
     end
 end
 
+-- menu gui (parented first, so everything below is visible)
+local gui = Instance.new("ScreenGui")
+gui.Name = "uaim_menu"
+gui.ResetOnSpawn = false
+gui.DisplayOrder = 999
+local okParent = pcall(function()
+    gui.Parent = (gethui and gethui()) or CoreGui
+end)
+if not okParent or not gui.Parent then
+    gui.Parent = LP:WaitForChild("PlayerGui")
+end
+
 -- fov ring (gui, resizes live)
 local ringGui = Instance.new("ScreenGui")
 ringGui.Name = "uaim_fov"
 ringGui.IgnoreGuiInset = true
 ringGui.ResetOnSpawn = false
 ringGui.DisplayOrder = 998
+ringGui.Parent = gui.Parent
 
 local ring = Instance.new("Frame")
 ring.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -253,26 +265,15 @@ stroke.Thickness = 1
 stroke.Color = Color3.fromRGB(255, 255, 255)
 stroke.Parent = ring
 
--- menu
-local gui = Instance.new("ScreenGui")
-gui.Name = "uaim_menu"
-gui.ResetOnSpawn = false
-gui.DisplayOrder = 999
-local okParent = pcall(function()
-    gui.Parent = (gethui and gethui()) or CoreGui
-end)
-if not okParent or not gui.Parent then
-    gui.Parent = LP:WaitForChild("PlayerGui")
-end
-
 local frame = Instance.new("Frame")
 frame.Name = "main"
-frame.Size = UDim2.fromOffset(230, 400)
+frame.Size = UDim2.fromOffset(230, 330)
 frame.Position = UDim2.fromOffset(40, 200)
 frame.BackgroundColor3 = Color3.fromRGB(20, 20, 24)
 frame.BorderSizePixel = 0
 frame.Active = true
 frame.Draggable = true
+frame.Visible = true
 frame.Parent = gui
 
 local title = Instance.new("TextLabel")
@@ -286,6 +287,24 @@ title.TextSize = 15
 title.TextColor3 = Color3.fromRGB(240, 240, 240)
 title.Parent = frame
 
+-- reopen pill, shown when the menu is tucked away
+local pill = Instance.new("TextButton")
+pill.Size = UDim2.fromOffset(64, 24)
+pill.Position = UDim2.fromOffset(10, 10)
+pill.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
+pill.BorderSizePixel = 0
+pill.Text = "uaim"
+pill.Font = Enum.Font.Code
+pill.TextSize = 14
+pill.TextColor3 = Color3.fromRGB(240, 240, 240)
+pill.Visible = false
+pill.Parent = gui
+
+local function setMenu(v)
+    frame.Visible = v
+    pill.Visible = not v
+end
+
 local hideBtn = Instance.new("TextButton")
 hideBtn.Size = UDim2.fromOffset(28, 28)
 hideBtn.Position = UDim2.new(1, -28, 0, 0)
@@ -296,9 +315,8 @@ hideBtn.Font = Enum.Font.Code
 hideBtn.TextSize = 15
 hideBtn.TextColor3 = Color3.fromRGB(240, 240, 240)
 hideBtn.Parent = frame
-hideBtn.MouseButton1Click:Connect(function()
-    frame.Visible = false
-end)
+hideBtn.MouseButton1Click:Connect(function() setMenu(false) end)
+pill.MouseButton1Click:Connect(function() setMenu(true) end)
 
 local list = Instance.new("Frame")
 list.Position = UDim2.new(0, 0, 0, 32)
@@ -395,9 +413,6 @@ toggleRow("fov circle", function() return CFG.FOVEnabled end,
 stepRow("fov size", function() return CFG.FOV end,
     function(v) CFG.FOV = v end, 10, CFG.FOVMin, CFG.FOVMax,
     function(v) return tostring(math.floor(v)) end)
-stepRow("smoothing", function() return CFG.Smoothing end,
-    function(v) CFG.Smoothing = v end, 0.05, 0, 0.95,
-    function(v) return string.format("%.2f", v) end)
 cycleRow("aim part", { "head", "neck", "body" },
     function() return CFG.AimPart end,
     function(v) CFG.AimPart = v end)
@@ -412,12 +427,6 @@ toggleRow("invisible", function() return CFG.Invisible end,
         CFG.Invisible = v
         applyInvis(LP.Character)
     end)
-toggleRow("team check", function() return CFG.TeamCheck end,
-    function(v) CFG.TeamCheck = v end)
-toggleRow("wall check", function() return CFG.WallCheck end,
-    function(v) CFG.WallCheck = v end)
-toggleRow("npc targets", function() return CFG.NPCs end,
-    function(v) CFG.NPCs = v end)
 
 -- input
 table.insert(conns, UIS.InputBegan:Connect(function(input, gp)
@@ -426,11 +435,11 @@ table.insert(conns, UIS.InputBegan:Connect(function(input, gp)
         CFG.Aimbot = not CFG.Aimbot
         refreshAll()
     elseif input.KeyCode == CFG.MenuKey then
-        frame.Visible = not frame.Visible
+        setMenu(not frame.Visible)
     end
 end))
 
--- main loop (after the game's camera scripts so nothing overwrites the aim)
+-- main loop (after the game's camera scripts so nothing overwrites the lock)
 RunService:BindToRenderStep(BIND, Enum.RenderPriority.Last.Value, function()
     local cam = Workspace.CurrentCamera
     if not cam then return end
@@ -448,19 +457,18 @@ RunService:BindToRenderStep(BIND, Enum.RenderPriority.Last.Value, function()
     ring.Size = UDim2.fromOffset(CFG.FOV * 2, CFG.FOV * 2)
     ring.Visible = CFG.FOVEnabled
 
-    local wantSilent = CFG.AimKill or (CFG.Silent and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1))
-    local wantAim = CFG.Aimbot and (not CFG.HoldMouse2 or UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2))
+    -- features only arm once aimbot and fov are both on
+    local armed = CFG.Aimbot and CFG.FOVEnabled
+    local tgt = armed and pickTarget() or nil
 
-    local tgt = nil
-    if wantSilent or wantAim then
-        tgt = pickTarget()
-    end
+    local silentOn = tgt ~= nil and (CFG.AimKill
+        or (CFG.Silent and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)))
+    silentTarget = silentOn and tgt or nil
 
-    silentTarget = wantSilent and tgt or nil
-
-    if wantAim and tgt then
-        local goal = CFrame.lookAt(cam.CFrame.Position, tgt)
-        cam.CFrame = cam.CFrame:Lerp(goal, 1 - CFG.Smoothing)
+    -- lock straight onto the nearest enemy in fov (no smoothing).
+    -- silent/aimkill redirect the shot instead of moving the camera.
+    if tgt and not silentOn then
+        cam.CFrame = CFrame.lookAt(cam.CFrame.Position, tgt)
     end
 end)
 
