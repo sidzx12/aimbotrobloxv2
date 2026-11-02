@@ -1,4 +1,4 @@
--- uaim v7 | menu + scroll + sliders + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + speed + jump + fly(F) | delta / any luau executor
+-- uaim v9 | menu + scroll + sliders + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + speed + jump + fly(F) | delta / any luau executor
 if getgenv and getgenv().__uaim_unload then
     pcall(getgenv().__uaim_unload)
 end
@@ -35,7 +35,7 @@ local CFG = {
     FlySpeed = 60,
     FlyMin = 10,
     FlyMax = 300,
-    FlyKey = Enum.KeyCode.F, -- starts/stops flying while fly is on
+    FlyKey = Enum.KeyCode.F,
     MenuKey = Enum.KeyCode.RightShift,
     ToggleKey = Enum.KeyCode.RightAlt,
 }
@@ -292,6 +292,7 @@ local gui = Instance.new("ScreenGui")
 gui.Name = "uaim_menu"
 gui.ResetOnSpawn = false
 gui.DisplayOrder = 999
+gui.IgnoreGuiInset = true
 local okParent = pcall(function()
     gui.Parent = (gethui and gethui()) or CoreGui
 end)
@@ -332,42 +333,70 @@ frame.BorderSizePixel = 0
 frame.Visible = true
 frame.Parent = gui
 
-local title = Instance.new("TextLabel")
+-- title bar is a button so the executor reliably registers the press
+local title = Instance.new("TextButton")
 title.Size = UDim2.new(1, -28, 0, 28)
 title.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
 title.BorderSizePixel = 0
+title.AutoButtonColor = false
 title.Text = "  uaim  (drag here)"
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Font = Enum.Font.Code
 title.TextSize = 15
 title.TextColor3 = Color3.fromRGB(240, 240, 240)
-title.Active = true
 title.Parent = frame
 
--- manual drag from the title bar (so sliders and scrolling don't fight it)
-do
-    local dragging, startMouse, startPos
-    title.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = true
-            startMouse = input.Position
-            startPos = frame.Position
-        end
-    end)
-    table.insert(conns, UIS.InputChanged:Connect(function(input)
-        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-            local d = input.Position - startMouse
-            frame.Position = UDim2.new(
-                startPos.X.Scale, startPos.X.Offset + d.X,
-                startPos.Y.Scale, startPos.Y.Offset + d.Y)
-        end
-    end))
-    table.insert(conns, UIS.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+-- pointer tracking for touch and mouse
+local pointerPos = UIS:GetMouseLocation()
+local pointerDown = false
+local dragging = false
+local dragStartMouse, dragStartPos
+local activeSlider = nil
+
+table.insert(conns, UIS.TouchStarted:Connect(function(touch)
+    pointerPos = Vector2.new(touch.Position.X, touch.Position.Y)
+    pointerDown = true
+end))
+table.insert(conns, UIS.TouchMoved:Connect(function(touch)
+    pointerPos = Vector2.new(touch.Position.X, touch.Position.Y)
+end))
+table.insert(conns, UIS.TouchEnded:Connect(function()
+    pointerDown = false
+end))
+table.insert(conns, UIS.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement then
+        pointerPos = Vector2.new(input.Position.X, input.Position.Y)
+    end
+end))
+
+title.MouseButton1Down:Connect(function()
+    dragging = true
+    dragStartMouse = pointerPos
+    dragStartPos = frame.Position
+end)
+
+table.insert(conns, RunService.RenderStepped:Connect(function()
+    local held = pointerDown or UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+
+    if dragging then
+        if held then
+            local d = pointerPos - dragStartMouse
+            frame.Position = UDim2.fromOffset(
+                dragStartPos.X.Offset + d.X,
+                dragStartPos.Y.Offset + d.Y)
+        else
             dragging = false
         end
-    end))
-end
+    end
+
+    if activeSlider then
+        if held then
+            activeSlider(pointerPos.X)
+        else
+            activeSlider = nil
+        end
+    end
+end))
 
 -- reopen pill, shown when the menu is tucked away
 local pill = Instance.new("TextButton")
@@ -465,7 +494,7 @@ local function cycleRow(label, opts, get, set)
     refresh()
 end
 
--- slider row: drag the track, or click anywhere on it
+-- slider row: press the track, then drag. fed by pointerPos every frame
 local function sliderRow(label, get, set, min, max, step, fmt)
     local f = Instance.new("Frame")
     f.Size = UDim2.new(1, -12, 0, 36)
@@ -481,12 +510,13 @@ local function sliderRow(label, get, set, min, max, step, fmt)
     lbl.TextColor3 = Color3.fromRGB(230, 230, 230)
     lbl.Parent = f
 
-    local track = Instance.new("Frame")
+    local track = Instance.new("TextButton")
     track.Position = UDim2.new(0, 0, 0, 22)
     track.Size = UDim2.new(1, 0, 0, 8)
     track.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
     track.BorderSizePixel = 0
-    track.Active = true
+    track.AutoButtonColor = false
+    track.Text = ""
     track.Parent = f
 
     local fill = Instance.new("Frame")
@@ -494,8 +524,6 @@ local function sliderRow(label, get, set, min, max, step, fmt)
     fill.BackgroundColor3 = Color3.fromRGB(90, 140, 255)
     fill.BorderSizePixel = 0
     fill.Parent = track
-
-    local dragging = false
 
     local function refresh()
         local v = get()
@@ -511,22 +539,10 @@ local function sliderRow(label, get, set, min, max, step, fmt)
         refreshAll()
     end
 
-    track.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = true
-            setFromX(input.Position.X)
-        end
+    track.MouseButton1Down:Connect(function()
+        activeSlider = setFromX
+        setFromX(pointerPos.X)
     end)
-    table.insert(conns, UIS.InputChanged:Connect(function(input)
-        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-            setFromX(input.Position.X)
-        end
-    end))
-    table.insert(conns, UIS.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = false
-        end
-    end))
 
     table.insert(refreshers, refresh)
     refresh()
@@ -580,7 +596,6 @@ toggleRow("fly", function() return CFG.Fly end,
         CFG.Fly = v
         if not v then flying = false end
     end)
--- fly key status: shows whether flying, and can also start/stop it
 do
     local b = mkBtn(body, "")
     local function refresh()
@@ -651,6 +666,8 @@ if getgenv then
     getgenv().__uaim_unload = function()
         alive = false
         silentTarget = nil
+        activeSlider = nil
+        dragging = false
         flying = false
         RunService:UnbindFromRenderStep(BIND)
         for _, c in ipairs(conns) do c:Disconnect() end
