@@ -1,6 +1,7 @@
--- uaim v25 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + fire delay + magnet + body aim + speed + jump + fly(F) + esp box/line/bold name + esp color/rgb + esp target + chams(hologram) + chams color/rgb + chams target + auto kill | delta / any luau executor
-if getgenv and getgenv().__uaim_unload then
-    pcall(getgenv().__uaim_unload)
+-- aimbot by sidzx12 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + fire delay + magnet + body aim + speed + jump + fly(F) + esp box/line/bold name + esp color/rgb + esp target + chams(hologram) + chams color/rgb + chams target + auto kill | delta / any luau executor
+if getgenv then
+    if getgenv().__sidzx12_unload then pcall(getgenv().__sidzx12_unload) end
+    if getgenv().__uaim_unload then pcall(getgenv().__uaim_unload) end
 end
 
 local Players = game:GetService("Players")
@@ -61,7 +62,7 @@ local CFG = {
 }
 
 local LP = Players.LocalPlayer
-local BIND = "uaim_loop"
+local BIND = "sidzx12_loop"
 local alive = true
 local conns = {}
 local refreshers = {}
@@ -335,7 +336,7 @@ local okHook, errHook = pcall(function()
     end))
 end)
 if not okHook then
-    warn("uaim: silent hook failed, executor lacks hookmetamethod - " .. tostring(errHook))
+    warn("sidzx12: silent hook failed, executor lacks hookmetamethod - " .. tostring(errHook))
 end
 
 -- movement: speed, jump, fly
@@ -345,9 +346,58 @@ local function getHumRoot()
     return char:FindFirstChildOfClass("Humanoid"), char:FindFirstChild("HumanoidRootPart")
 end
 
-local function movementStep()
+-- fly uses BodyVelocity so gravity is actually cancelled. the old approach
+-- set AssemblyLinearVelocity from Heartbeat, but gravity eats it between
+-- physics steps. camera-relative WASD, shift = 2x boost, velocity lerps.
+local flyBV = nil
+
+local function flyCleanup()
+    if flyBV then
+        pcall(function() flyBV:Destroy() end)
+        flyBV = nil
+    end
+end
+
+local function flyStep(dt, root, hum)
+    if not flyBV or not flyBV.Parent then
+        flyBV = Instance.new("BodyVelocity")
+        flyBV.Name = "sidzx12_fly"
+        flyBV.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+        flyBV.P = 1e4
+        flyBV.Parent = root
+    end
+
+    local cam = Workspace.CurrentCamera
+    local look = cam and cam.CFrame.LookVector or Vector3.new(0, 0, -1)
+    local fwd = Vector3.new(look.X, 0, look.Z)
+    if fwd.Magnitude < 0.01 then fwd = Vector3.new(0, 0, -1) else fwd = fwd.Unit end
+    local right = Vector3.new(-fwd.Z, 0, fwd.X)
+
+    local move = hum.MoveDirection
+    local f = move:Dot(fwd)
+    local r = move:Dot(right)
+    local target = fwd * f + right * r
+    if target.Magnitude > 1 then target = target.Unit end
+
+    local boost = 1
+    if UIS:IsKeyDown(Enum.KeyCode.LeftShift) then boost = 2 end
+
+    local vy = 0
+    if UIS:IsKeyDown(Enum.KeyCode.Space) then vy = 1
+    elseif UIS:IsKeyDown(Enum.KeyCode.LeftControl) then vy = -1 end
+
+    local speed = CFG.FlySpeed * boost
+    local want = Vector3.new(target.X * speed, vy * speed, target.Z * speed)
+
+    flyBV.Velocity = flyBV.Velocity:Lerp(want, math.clamp(dt * 12, 0, 1))
+end
+
+local function movementStep(dt)
     local hum, root = getHumRoot()
-    if not hum or hum.Health <= 0 then return end
+    if not hum or hum.Health <= 0 then
+        flyCleanup()
+        return
+    end
 
     if CFG.Speed then
         hum.WalkSpeed = CFG.WalkSpeed
@@ -357,26 +407,16 @@ local function movementStep()
         hum.JumpPower = CFG.JumpPower
     end
 
-    -- fly only when the fly feature is on AND the fly key has started it
     if CFG.Fly and flying and root then
-        local move = hum.MoveDirection
-        local vy = 0
-        if UIS:IsKeyDown(Enum.KeyCode.Space) then
-            vy = 1
-        elseif UIS:IsKeyDown(Enum.KeyCode.LeftControl) then
-            vy = -1
-        end
-        root.AssemblyLinearVelocity = Vector3.new(
-            move.X * CFG.FlySpeed,
-            vy * CFG.FlySpeed,
-            move.Z * CFG.FlySpeed
-        )
+        flyStep(dt, root, hum)
+    else
+        flyCleanup()
     end
 end
 
-table.insert(conns, RunService.Heartbeat:Connect(function()
-    local ok, err = pcall(movementStep)
-    if not ok then warn("uaim move: " .. tostring(err)) end
+table.insert(conns, RunService.Heartbeat:Connect(function(dt)
+    local ok, err = pcall(movementStep, dt)
+    if not ok then warn("sidzx12 move: " .. tostring(err)) end
 end))
 
 -- nearest enemy by world distance (used by auto kill)
@@ -536,7 +576,7 @@ local function updateVisuals(cam)
         if CFG.Chams and visAllowed(v.kind, CFG.ChamsTarget) then
             keepCham[m] = true
             local okC, errC = pcall(updateCham, m, colorFor(v.kind, CFG.ChamsRGB, CFG.ChamsColor))
-            if not okC then warn("uaim chams: " .. tostring(errC)) end
+            if not okC then warn("sidzx12 chams: " .. tostring(errC)) end
         end
 
         -- esp: only when at least one esp box/line/name is on AND this kind matches esp target
@@ -589,7 +629,7 @@ end
 
 -- menu gui
 local gui = Instance.new("ScreenGui")
-gui.Name = "uaim_menu"
+gui.Name = "sidzx12_menu"
 gui.ResetOnSpawn = false
 gui.DisplayOrder = 999
 gui.IgnoreGuiInset = true
@@ -602,7 +642,7 @@ end
 
 -- fov ring (gui, resizes live)
 local ringGui = Instance.new("ScreenGui")
-ringGui.Name = "uaim_fov"
+ringGui.Name = "sidzx12_fov"
 ringGui.IgnoreGuiInset = true
 ringGui.ResetOnSpawn = false
 ringGui.DisplayOrder = 998
@@ -639,7 +679,7 @@ title.Size = UDim2.new(1, -28, 0, 28)
 title.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
 title.BorderSizePixel = 0
 title.AutoButtonColor = false
-title.Text = "  uaim  (drag here)"
+title.Text = "  aimbot by sidzx12  (drag here)"
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Font = Enum.Font.Code
 title.TextSize = 15
@@ -715,13 +755,13 @@ end))
 
 -- reopen pill, shown when the menu is tucked away
 local pill = Instance.new("TextButton")
-pill.Size = UDim2.fromOffset(64, 24)
+pill.Size = UDim2.fromOffset(120, 24)
 pill.Position = UDim2.fromOffset(10, 10)
 pill.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
 pill.BorderSizePixel = 0
-pill.Text = "uaim"
+pill.Text = "aimbot by sidzx12"
 pill.Font = Enum.Font.Code
-pill.TextSize = 14
+pill.TextSize = 13
 pill.TextColor3 = Color3.fromRGB(240, 240, 240)
 pill.Visible = false
 pill.Parent = gui
@@ -988,7 +1028,10 @@ sliderRow("jump power", function() return CFG.JumpPower end,
 toggleRow("fly", function() return CFG.Fly end,
     function(v)
         CFG.Fly = v
-        if not v then flying = false end
+        if not v then
+            flying = false
+            flyCleanup()
+        end
     end)
 do
     local b = mkBtn("")
@@ -996,7 +1039,10 @@ do
         b.Text = "fly key [F]: " .. (flying and "flying" or "landed")
     end
     b.MouseButton1Click:Connect(function()
-        if CFG.Fly then flying = not flying end
+        if CFG.Fly then
+            flying = not flying
+            if not flying then flyCleanup() end
+        end
         refreshAll()
     end)
     table.insert(refreshers, refresh)
@@ -1016,6 +1062,7 @@ table.insert(conns, UIS.InputBegan:Connect(function(input, gp)
     elseif input.KeyCode == CFG.FlyKey then
         if CFG.Fly then
             flying = not flying
+            if not flying then flyCleanup() end
             refreshAll()
         end
     end
@@ -1054,7 +1101,7 @@ local function renderStep()
             end
             silentTarget = res
         elseif not ok then
-            warn("uaim autokill: " .. tostring(res))
+            warn("sidzx12 autokill: " .. tostring(res))
         end
         return
     end
@@ -1067,7 +1114,7 @@ local function renderStep()
             if ok and res then
                 fireOnce(now)
             elseif not ok then
-                warn("uaim aimfire: " .. tostring(res))
+                warn("sidzx12 aimfire: " .. tostring(res))
             end
         end
     end
@@ -1113,7 +1160,7 @@ local function runVisuals()
     local cam = Workspace.CurrentCamera
     if cam then
         local ok, err = pcall(updateVisuals, cam)
-        if not ok then warn("uaim visuals: " .. tostring(err)) end
+        if not ok then warn("sidzx12 visuals: " .. tostring(err)) end
     end
 end
 
@@ -1121,19 +1168,20 @@ RunService:BindToRenderStep(BIND, Enum.RenderPriority.Last.Value, function()
     local ok, err = xpcall(renderStep, debug.traceback)
     if not ok and err ~= lastRenderErr then
         lastRenderErr = err
-        warn("uaim render: " .. tostring(err))
+        warn("sidzx12 render: " .. tostring(err))
     end
     runVisuals()
 end)
 
 -- unload
 if getgenv then
-    getgenv().__uaim_unload = function()
+    getgenv().__sidzx12_unload = function()
         alive = false
         silentTarget = nil
         activeSlider = nil
         dragging = false
         flying = false
+        flyCleanup()
         RunService:UnbindFromRenderStep(BIND)
         for _, c in ipairs(conns) do c:Disconnect() end
         for m in pairs(espCache) do destroyEsp(m) end
