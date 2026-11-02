@@ -1,4 +1,4 @@
--- uaim v6 | menu + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + speed + jump + fly | delta / any luau executor
+-- uaim v7 | menu + scroll + sliders + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + speed + jump + fly(F) | delta / any luau executor
 if getgenv and getgenv().__uaim_unload then
     pcall(getgenv().__uaim_unload)
 end
@@ -31,10 +31,11 @@ local CFG = {
     JumpPower = 50,
     JumpMin = 50,
     JumpMax = 300,
-    Fly = false,
+    Fly = false,            -- feature gate (menu)
     FlySpeed = 60,
     FlyMin = 10,
     FlyMax = 300,
+    FlyKey = Enum.KeyCode.F, -- starts/stops flying while fly is on
     MenuKey = Enum.KeyCode.RightShift,
     ToggleKey = Enum.KeyCode.RightAlt,
 }
@@ -51,6 +52,7 @@ local silentTarget = nil
 local ammoVal = {}
 local ammoAttr = {}
 local origWalk, origJump = 16, 50
+local flying = false
 
 local function refreshAll()
     for _, f in ipairs(refreshers) do f() end
@@ -266,7 +268,8 @@ local function movementStep()
         hum.JumpPower = CFG.JumpPower
     end
 
-    if CFG.Fly and root then
+    -- fly only when the fly feature is on AND the fly key has started it
+    if CFG.Fly and flying and root then
         local move = hum.MoveDirection
         local vy = 0
         if UIS:IsKeyDown(Enum.KeyCode.Space) then
@@ -284,7 +287,7 @@ end
 
 table.insert(conns, RunService.Heartbeat:Connect(movementStep))
 
--- menu gui (parented first, so everything below is visible)
+-- menu gui
 local gui = Instance.new("ScreenGui")
 gui.Name = "uaim_menu"
 gui.ResetOnSpawn = false
@@ -322,12 +325,10 @@ stroke.Parent = ring
 
 local frame = Instance.new("Frame")
 frame.Name = "main"
-frame.Size = UDim2.fromOffset(230, 470)
-frame.Position = UDim2.fromOffset(40, 200)
+frame.Size = UDim2.fromOffset(250, 440)
+frame.Position = UDim2.fromOffset(40, 120)
 frame.BackgroundColor3 = Color3.fromRGB(20, 20, 24)
 frame.BorderSizePixel = 0
-frame.Active = true
-frame.Draggable = true
 frame.Visible = true
 frame.Parent = gui
 
@@ -335,12 +336,38 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -28, 0, 28)
 title.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
 title.BorderSizePixel = 0
-title.Text = "  uaim"
+title.Text = "  uaim  (drag here)"
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Font = Enum.Font.Code
 title.TextSize = 15
 title.TextColor3 = Color3.fromRGB(240, 240, 240)
+title.Active = true
 title.Parent = frame
+
+-- manual drag from the title bar (so sliders and scrolling don't fight it)
+do
+    local dragging, startMouse, startPos
+    title.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            startMouse = input.Position
+            startPos = frame.Position
+        end
+    end)
+    table.insert(conns, UIS.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local d = input.Position - startMouse
+            frame.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + d.X,
+                startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        end
+    end))
+    table.insert(conns, UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end))
+end
 
 -- reopen pill, shown when the menu is tucked away
 local pill = Instance.new("TextButton")
@@ -373,16 +400,27 @@ hideBtn.Parent = frame
 hideBtn.MouseButton1Click:Connect(function() setMenu(false) end)
 pill.MouseButton1Click:Connect(function() setMenu(true) end)
 
-local list = Instance.new("Frame")
-list.Position = UDim2.new(0, 0, 0, 32)
-list.Size = UDim2.new(1, 0, 1, -36)
-list.BackgroundTransparency = 1
-list.Parent = frame
+-- scrolling body
+local body = Instance.new("ScrollingFrame")
+body.Position = UDim2.new(0, 0, 0, 32)
+body.Size = UDim2.new(1, 0, 1, -36)
+body.BackgroundTransparency = 1
+body.BorderSizePixel = 0
+body.ScrollBarThickness = 4
+body.CanvasSize = UDim2.new(0, 0, 0, 0)
+body.AutomaticCanvasSize = Enum.AutomaticSize.Y
+body.Parent = frame
 
 local layout = Instance.new("UIListLayout")
 layout.Padding = UDim.new(0, 4)
 layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-layout.Parent = list
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+layout.Parent = body
+
+local pad = Instance.new("UIPadding")
+pad.PaddingTop = UDim.new(0, 2)
+pad.PaddingBottom = UDim.new(0, 6)
+pad.Parent = body
 
 local function mkBtn(parent, text)
     local b = Instance.new("TextButton")
@@ -398,7 +436,7 @@ local function mkBtn(parent, text)
 end
 
 local function toggleRow(label, get, set)
-    local b = mkBtn(list, "")
+    local b = mkBtn(body, "")
     local function refresh()
         b.Text = label .. ": " .. (get() and "on" or "off")
     end
@@ -411,7 +449,7 @@ local function toggleRow(label, get, set)
 end
 
 local function cycleRow(label, opts, get, set)
-    local b = mkBtn(list, "")
+    local b = mkBtn(body, "")
     local function refresh()
         b.Text = label .. ": " .. get()
     end
@@ -427,36 +465,69 @@ local function cycleRow(label, opts, get, set)
     refresh()
 end
 
-local function stepRow(label, get, set, step, min, max, fmt)
+-- slider row: drag the track, or click anywhere on it
+local function sliderRow(label, get, set, min, max, step, fmt)
     local f = Instance.new("Frame")
-    f.Size = UDim2.new(1, -12, 0, 26)
+    f.Size = UDim2.new(1, -12, 0, 36)
     f.BackgroundTransparency = 1
-    f.Parent = list
-
-    local minus = mkBtn(f, "-")
-    minus.Size = UDim2.new(0, 30, 1, 0)
-    local plus = mkBtn(f, "+")
-    plus.Size = UDim2.new(0, 30, 1, 0)
-    plus.Position = UDim2.new(1, -30, 0, 0)
+    f.Parent = body
 
     local lbl = Instance.new("TextLabel")
     lbl.BackgroundTransparency = 1
-    lbl.Size = UDim2.new(1, -68, 1, 0)
-    lbl.Position = UDim2.new(0, 34, 0, 0)
+    lbl.Size = UDim2.new(1, 0, 0, 16)
     lbl.Font = Enum.Font.Code
     lbl.TextSize = 14
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
     lbl.TextColor3 = Color3.fromRGB(230, 230, 230)
     lbl.Parent = f
 
+    local track = Instance.new("Frame")
+    track.Position = UDim2.new(0, 0, 0, 22)
+    track.Size = UDim2.new(1, 0, 0, 8)
+    track.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+    track.BorderSizePixel = 0
+    track.Active = true
+    track.Parent = f
+
+    local fill = Instance.new("Frame")
+    fill.Size = UDim2.new(0, 0, 1, 0)
+    fill.BackgroundColor3 = Color3.fromRGB(90, 140, 255)
+    fill.BorderSizePixel = 0
+    fill.Parent = track
+
+    local dragging = false
+
     local function refresh()
-        lbl.Text = label .. " " .. fmt(get())
+        local v = get()
+        lbl.Text = label .. " " .. fmt(v)
+        fill.Size = UDim2.new(math.clamp((v - min) / (max - min), 0, 1), 0, 1, 0)
     end
-    local function bump(d)
-        set(math.clamp(get() + d, min, max))
+
+    local function setFromX(x)
+        local r = math.clamp((x - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
+        local v = min + r * (max - min)
+        v = math.floor(v / step + 0.5) * step
+        set(math.clamp(v, min, max))
         refreshAll()
     end
-    minus.MouseButton1Click:Connect(function() bump(-step) end)
-    plus.MouseButton1Click:Connect(function() bump(step) end)
+
+    track.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            setFromX(input.Position.X)
+        end
+    end)
+    table.insert(conns, UIS.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            setFromX(input.Position.X)
+        end
+    end))
+    table.insert(conns, UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end))
+
     table.insert(refreshers, refresh)
     refresh()
 end
@@ -465,8 +536,8 @@ toggleRow("aimbot", function() return CFG.Aimbot end,
     function(v) CFG.Aimbot = v end)
 toggleRow("fov circle", function() return CFG.FOVEnabled end,
     function(v) CFG.FOVEnabled = v end)
-stepRow("fov size", function() return CFG.FOV end,
-    function(v) CFG.FOV = v end, 10, CFG.FOVMin, CFG.FOVMax,
+sliderRow("fov size", function() return CFG.FOV end,
+    function(v) CFG.FOV = v end, CFG.FOVMin, CFG.FOVMax, 10,
     function(v) return tostring(math.floor(v)) end)
 cycleRow("aim part", { "head", "neck", "body" },
     function() return CFG.AimPart end,
@@ -490,8 +561,8 @@ toggleRow("speed", function() return CFG.Speed end,
             if hum then hum.WalkSpeed = origWalk end
         end
     end)
-stepRow("walk speed", function() return CFG.WalkSpeed end,
-    function(v) CFG.WalkSpeed = v end, 2, CFG.WalkMin, CFG.WalkMax,
+sliderRow("walk speed", function() return CFG.WalkSpeed end,
+    function(v) CFG.WalkSpeed = v end, CFG.WalkMin, CFG.WalkMax, 2,
     function(v) return tostring(math.floor(v)) end)
 toggleRow("jump", function() return CFG.Jump end,
     function(v)
@@ -501,13 +572,29 @@ toggleRow("jump", function() return CFG.Jump end,
             if hum then hum.JumpPower = origJump end
         end
     end)
-stepRow("jump power", function() return CFG.JumpPower end,
-    function(v) CFG.JumpPower = v end, 5, CFG.JumpMin, CFG.JumpMax,
+sliderRow("jump power", function() return CFG.JumpPower end,
+    function(v) CFG.JumpPower = v end, CFG.JumpMin, CFG.JumpMax, 5,
     function(v) return tostring(math.floor(v)) end)
 toggleRow("fly", function() return CFG.Fly end,
-    function(v) CFG.Fly = v end)
-stepRow("fly speed", function() return CFG.FlySpeed end,
-    function(v) CFG.FlySpeed = v end, 5, CFG.FlyMin, CFG.FlyMax,
+    function(v)
+        CFG.Fly = v
+        if not v then flying = false end
+    end)
+-- fly key status: shows whether flying, and can also start/stop it
+do
+    local b = mkBtn(body, "")
+    local function refresh()
+        b.Text = "fly key [F]: " .. (flying and "flying" or "landed")
+    end
+    b.MouseButton1Click:Connect(function()
+        if CFG.Fly then flying = not flying end
+        refreshAll()
+    end)
+    table.insert(refreshers, refresh)
+    refresh()
+end
+sliderRow("fly speed", function() return CFG.FlySpeed end,
+    function(v) CFG.FlySpeed = v end, CFG.FlyMin, CFG.FlyMax, 5,
     function(v) return tostring(math.floor(v)) end)
 
 -- input
@@ -518,6 +605,11 @@ table.insert(conns, UIS.InputBegan:Connect(function(input, gp)
         refreshAll()
     elseif input.KeyCode == CFG.MenuKey then
         setMenu(not frame.Visible)
+    elseif input.KeyCode == CFG.FlyKey then
+        if CFG.Fly then
+            flying = not flying
+            refreshAll()
+        end
     end
 end))
 
@@ -559,6 +651,7 @@ if getgenv then
     getgenv().__uaim_unload = function()
         alive = false
         silentTarget = nil
+        flying = false
         RunService:UnbindFromRenderStep(BIND)
         for _, c in ipairs(conns) do c:Disconnect() end
         CFG.Invisible = false
