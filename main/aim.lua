@@ -1,4 +1,4 @@
--- uaim v12 | menu + scroll + sliders + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + speed + jump + fly(F) + esp box/line/name + auto kill | delta / any luau executor
+-- uaim v13 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + speed + jump + fly(F) + esp box/line/name + auto kill | delta / any luau executor
 if getgenv and getgenv().__uaim_unload then
     pcall(getgenv().__uaim_unload)
 end
@@ -59,6 +59,7 @@ local ammoAttr = {}
 local origWalk, origJump = 16, 50
 local flying = false
 local espCache = {}
+local lastRenderErr = nil
 
 local CORNERS = {
     Vector3.new(-1, -1, -1), Vector3.new(-1, -1, 1),
@@ -317,7 +318,7 @@ local function nearestEnemy()
     local best, bestD = nil, math.huge
     for _, t in ipairs(targets) do
         local r = rootOf(t.model)
-        if t.hum.Health > 0 and r then
+        if t.hum.Health > 0 and r and t.model.Parent then
             local d = (r.Position - myRoot.Position).Magnitude
             if d < bestD then best, bestD = t, d end
         end
@@ -374,6 +375,24 @@ local function destroyEsp(model)
     espCache[model] = nil
 end
 
+-- returns minX, minY, maxX, maxY of the model's box on screen, or nil
+local function screenBox(m, cam)
+    local okBB, cf, size = pcall(m.GetBoundingBox, m)
+    if not okBB or not cf or not size then return nil end
+    local hx, hy, hz = size.X / 2, size.Y / 2, size.Z / 2
+    local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
+    for _, s in ipairs(CORNERS) do
+        local p = cf * Vector3.new(s.X * hx, s.Y * hy, s.Z * hz)
+        local sp = cam:WorldToViewportPoint(p)
+        if sp.Z <= 0 then return nil end
+        minX = math.min(minX, sp.X)
+        minY = math.min(minY, sp.Y)
+        maxX = math.max(maxX, sp.X)
+        maxY = math.max(maxY, sp.Y)
+    end
+    return minX, minY, maxX, maxY
+end
+
 local function updateEsp(cam)
     if not Drawing then return end
     local keep = {}
@@ -384,24 +403,12 @@ local function updateEsp(cam)
         keep[m] = true
         local e = espFor(m)
         if e then
-            local ok = false
-            local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
+            local minX, minY, maxX, maxY
             if anyOn and t.hum.Health > 0 and m.Parent then
-                local cf, size = m:GetBoundingBox()
-                local hx, hy, hz = size.X / 2, size.Y / 2, size.Z / 2
-                ok = true
-                for _, s in ipairs(CORNERS) do
-                    local p = cf * Vector3.new(s.X * hx, s.Y * hy, s.Z * hz)
-                    local sp = cam:WorldToViewportPoint(p)
-                    if sp.Z <= 0 then ok = false break end
-                    minX = math.min(minX, sp.X)
-                    minY = math.min(minY, sp.Y)
-                    maxX = math.max(maxX, sp.X)
-                    maxY = math.max(maxY, sp.Y)
-                end
+                minX, minY, maxX, maxY = screenBox(m, cam)
             end
 
-            if ok then
+            if minX then
                 local midX = (minX + maxX) / 2
                 e.box.Visible = CFG.ESPBox
                 e.box.Position = Vector2.new(minX, minY)
@@ -412,7 +419,8 @@ local function updateEsp(cam)
                 e.line.To = Vector2.new(midX, maxY)
 
                 local p = Players:GetPlayerFromCharacter(m)
-                local dist = math.floor((cam.CFrame.Position - m:GetPivot().Position).Magnitude)
+                local okPiv, piv = pcall(function() return m:GetPivot().Position end)
+                local dist = okPiv and math.floor((cam.CFrame.Position - piv).Magnitude) or 0
                 e.name.Visible = CFG.ESPName
                 e.name.Text = (p and p.Name or m.Name) .. " [" .. dist .. "]"
                 e.name.Position = Vector2.new(midX, minY - 16)
@@ -466,7 +474,7 @@ stroke.Parent = ring
 
 local frame = Instance.new("Frame")
 frame.Name = "main"
-frame.Size = UDim2.fromOffset(250, 440)
+frame.Size = UDim2.fromOffset(300, 300)
 frame.Position = UDim2.fromOffset(40, 120)
 frame.BackgroundColor3 = Color3.fromRGB(20, 20, 24)
 frame.BorderSizePixel = 0
@@ -584,43 +592,71 @@ hideBtn.Parent = frame
 hideBtn.MouseButton1Click:Connect(function() setMenu(false) end)
 pill.MouseButton1Click:Connect(function() setMenu(true) end)
 
--- scrolling body
+-- sideways body: columns scroll left/right, nothing scrolls down
 local body = Instance.new("ScrollingFrame")
 body.Position = UDim2.new(0, 0, 0, 32)
 body.Size = UDim2.new(1, 0, 1, -36)
 body.BackgroundTransparency = 1
 body.BorderSizePixel = 0
 body.ScrollBarThickness = 4
+body.ScrollingDirection = Enum.ScrollingDirection.X
 body.CanvasSize = UDim2.new(0, 0, 0, 0)
-body.AutomaticCanvasSize = Enum.AutomaticSize.Y
+body.AutomaticCanvasSize = Enum.AutomaticSize.X
 body.Parent = frame
 
-local layout = Instance.new("UIListLayout")
-layout.Padding = UDim.new(0, 4)
-layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-layout.SortOrder = Enum.SortOrder.LayoutOrder
-layout.Parent = body
+local strip = Instance.new("UIListLayout")
+strip.FillDirection = Enum.FillDirection.Horizontal
+strip.Padding = UDim.new(0, 6)
+strip.SortOrder = Enum.SortOrder.LayoutOrder
+strip.Parent = body
 
-local pad = Instance.new("UIPadding")
-pad.PaddingTop = UDim.new(0, 2)
-pad.PaddingBottom = UDim.new(0, 6)
-pad.Parent = body
+local stripPad = Instance.new("UIPadding")
+stripPad.PaddingLeft = UDim.new(0, 4)
+stripPad.PaddingRight = UDim.new(0, 4)
+stripPad.Parent = body
 
-local function mkBtn(parent, text)
+local curCol = nil
+
+local function newCol(name)
+    local c = Instance.new("Frame")
+    c.Size = UDim2.new(0, 140, 1, 0)
+    c.BackgroundTransparency = 1
+    c.Parent = body
+
+    local l = Instance.new("UIListLayout")
+    l.Padding = UDim.new(0, 4)
+    l.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    l.SortOrder = Enum.SortOrder.LayoutOrder
+    l.Parent = c
+
+    local h = Instance.new("TextLabel")
+    h.Size = UDim2.new(1, -8, 0, 16)
+    h.BackgroundTransparency = 1
+    h.Text = name
+    h.Font = Enum.Font.Code
+    h.TextSize = 13
+    h.TextXAlignment = Enum.TextXAlignment.Left
+    h.TextColor3 = Color3.fromRGB(140, 160, 220)
+    h.Parent = c
+
+    curCol = c
+end
+
+local function mkBtn(text)
     local b = Instance.new("TextButton")
-    b.Size = UDim2.new(1, -12, 0, 26)
+    b.Size = UDim2.new(1, -8, 0, 26)
     b.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
     b.BorderSizePixel = 0
     b.TextColor3 = Color3.fromRGB(230, 230, 230)
     b.Font = Enum.Font.Code
-    b.TextSize = 14
+    b.TextSize = 13
     b.Text = text
-    b.Parent = parent
+    b.Parent = curCol
     return b
 end
 
 local function toggleRow(label, get, set)
-    local b = mkBtn(body, "")
+    local b = mkBtn("")
     local function refresh()
         b.Text = label .. ": " .. (get() and "on" or "off")
     end
@@ -633,7 +669,7 @@ local function toggleRow(label, get, set)
 end
 
 local function cycleRow(label, opts, get, set)
-    local b = mkBtn(body, "")
+    local b = mkBtn("")
     local function refresh()
         b.Text = label .. ": " .. get()
     end
@@ -652,15 +688,15 @@ end
 -- slider row: press the track, then drag. fed by pointerPos every frame
 local function sliderRow(label, get, set, min, max, step, fmt)
     local f = Instance.new("Frame")
-    f.Size = UDim2.new(1, -12, 0, 36)
+    f.Size = UDim2.new(1, -8, 0, 36)
     f.BackgroundTransparency = 1
-    f.Parent = body
+    f.Parent = curCol
 
     local lbl = Instance.new("TextLabel")
     lbl.BackgroundTransparency = 1
     lbl.Size = UDim2.new(1, 0, 0, 16)
     lbl.Font = Enum.Font.Code
-    lbl.TextSize = 14
+    lbl.TextSize = 13
     lbl.TextXAlignment = Enum.TextXAlignment.Left
     lbl.TextColor3 = Color3.fromRGB(230, 230, 230)
     lbl.Parent = f
@@ -703,13 +739,16 @@ local function sliderRow(label, get, set, min, max, step, fmt)
     refresh()
 end
 
+local function fmtInt(v) return tostring(math.floor(v)) end
+
+-- column: aim
+newCol("aim")
 toggleRow("aimbot", function() return CFG.Aimbot end,
     function(v) CFG.Aimbot = v end)
 toggleRow("fov circle", function() return CFG.FOVEnabled end,
     function(v) CFG.FOVEnabled = v end)
 sliderRow("fov size", function() return CFG.FOV end,
-    function(v) CFG.FOV = v end, CFG.FOVMin, CFG.FOVMax, 10,
-    function(v) return tostring(math.floor(v)) end)
+    function(v) CFG.FOV = v end, CFG.FOVMin, CFG.FOVMax, 10, fmtInt)
 cycleRow("aim part", { "head", "neck", "body" },
     function() return CFG.AimPart end,
     function(v) CFG.AimPart = v end)
@@ -719,6 +758,9 @@ toggleRow("aimkill", function() return CFG.AimKill end,
     function(v) CFG.AimKill = v end)
 toggleRow("aimfire", function() return CFG.AimFire end,
     function(v) CFG.AimFire = v end)
+
+-- column: esp + invisible
+newCol("esp")
 toggleRow("invisible", function() return CFG.Invisible end,
     function(v)
         CFG.Invisible = v
@@ -730,8 +772,14 @@ toggleRow("esp line", function() return CFG.ESPLine end,
     function(v) CFG.ESPLine = v end)
 toggleRow("esp name", function() return CFG.ESPName end,
     function(v) CFG.ESPName = v end)
+
+-- column: kill
+newCol("kill")
 toggleRow("auto kill", function() return CFG.AutoKill end,
     function(v) CFG.AutoKill = v end)
+
+-- column: move
+newCol("move")
 toggleRow("speed", function() return CFG.Speed end,
     function(v)
         CFG.Speed = v
@@ -741,8 +789,7 @@ toggleRow("speed", function() return CFG.Speed end,
         end
     end)
 sliderRow("walk speed", function() return CFG.WalkSpeed end,
-    function(v) CFG.WalkSpeed = v end, CFG.WalkMin, CFG.WalkMax, 2,
-    function(v) return tostring(math.floor(v)) end)
+    function(v) CFG.WalkSpeed = v end, CFG.WalkMin, CFG.WalkMax, 2, fmtInt)
 toggleRow("jump", function() return CFG.Jump end,
     function(v)
         CFG.Jump = v
@@ -752,15 +799,14 @@ toggleRow("jump", function() return CFG.Jump end,
         end
     end)
 sliderRow("jump power", function() return CFG.JumpPower end,
-    function(v) CFG.JumpPower = v end, CFG.JumpMin, CFG.JumpMax, 5,
-    function(v) return tostring(math.floor(v)) end)
+    function(v) CFG.JumpPower = v end, CFG.JumpMin, CFG.JumpMax, 5, fmtInt)
 toggleRow("fly", function() return CFG.Fly end,
     function(v)
         CFG.Fly = v
         if not v then flying = false end
     end)
 do
-    local b = mkBtn(body, "")
+    local b = mkBtn("")
     local function refresh()
         b.Text = "fly key [F]: " .. (flying and "flying" or "landed")
     end
@@ -772,8 +818,7 @@ do
     refresh()
 end
 sliderRow("fly speed", function() return CFG.FlySpeed end,
-    function(v) CFG.FlySpeed = v end, CFG.FlyMin, CFG.FlyMax, 5,
-    function(v) return tostring(math.floor(v)) end)
+    function(v) CFG.FlySpeed = v end, CFG.FlyMin, CFG.FlyMax, 5, fmtInt)
 
 -- input
 table.insert(conns, UIS.InputBegan:Connect(function(input, gp)
@@ -791,18 +836,22 @@ table.insert(conns, UIS.InputBegan:Connect(function(input, gp)
     end
 end))
 
--- auto kill step, isolated so an error here can't stop the rest of the loop
+-- auto kill step: teleport behind target, aim, fire. errors are caught by the caller
 local function autoKillStep(now)
     local t = nearestEnemy()
     local _, myRoot = getHumRoot()
-    local r = t and rootOf(t.model)
-    if not (myRoot and r) then return nil end
+    if not (t and myRoot) then return nil end
+
+    local r = rootOf(t.model)
+    if not r or not r.Parent then return nil end
 
     local goal = aimPos(t.model)
     if not goal then return nil end
 
-    myRoot.CFrame = r.CFrame * CFrame.new(0, 0, 3)
-    myRoot.AssemblyLinearVelocity = Vector3.zero
+    if not myRoot.Anchored then
+        myRoot.CFrame = r.CFrame * CFrame.new(0, 0, 3)
+        myRoot.AssemblyLinearVelocity = Vector3.zero
+    end
 
     if now - lastFire > 0.15 then
         fireOnce()
@@ -811,8 +860,8 @@ local function autoKillStep(now)
     return goal
 end
 
--- main loop (after the game's camera scripts so nothing overwrites the lock)
-RunService:BindToRenderStep(BIND, Enum.RenderPriority.Last.Value, function()
+-- one render frame. wrapped by xpcall below so errors show a traceback
+local function renderStep()
     local cam = Workspace.CurrentCamera
     if not cam then return end
 
@@ -860,6 +909,14 @@ RunService:BindToRenderStep(BIND, Enum.RenderPriority.Last.Value, function()
 
     local okEsp, errEsp = pcall(updateEsp, cam)
     if not okEsp then warn("uaim esp: " .. tostring(errEsp)) end
+end
+
+RunService:BindToRenderStep(BIND, Enum.RenderPriority.Last.Value, function()
+    local ok, err = xpcall(renderStep, debug.traceback)
+    if not ok and err ~= lastRenderErr then
+        lastRenderErr = err
+        warn("uaim render: " .. tostring(err))
+    end
 end)
 
 -- unload
