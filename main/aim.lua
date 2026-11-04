@@ -1,7 +1,6 @@
--- aimbot by sidzx12 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + fire delay + magnet + body aim + speed + jump + fly(F) + esp box/line/bold name + esp color/rgb + esp target + chams(hologram) + chams color/rgb + chams target + auto kill | delta / any luau executor
-if getgenv then
-    if getgenv().__sidzx12_unload then pcall(getgenv().__sidzx12_unload) end
-    if getgenv().__uaim_unload then pcall(getgenv().__uaim_unload) end
+-- uaim v25 | sideways menu + touch + reopen pill + fov + lock + invisible + aim part + silent + aimkill + aimfire + fire delay + magnet + body aim + speed + jump + fly(F) + esp box/line/bold name + esp color/rgb + esp target + chams(hologram) + chams color/rgb + chams target + auto kill | delta / any luau executor
+if getgenv and getgenv().__uaim_unload then
+    pcall(getgenv().__uaim_unload)
 end
 
 local Players = game:GetService("Players")
@@ -9,7 +8,6 @@ local RunService = game:GetService("RunService")
 local UIS = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 local CoreGui = game:GetService("CoreGui")
-local VIM = game:GetService("VirtualInputManager")
 
 local CFG = {
     Aimbot = true,
@@ -19,9 +17,9 @@ local CFG = {
     FOVMax = 600,
     AimPart = "head",       -- "head" | "neck" | "body"
     Silent = false,         -- redirect shots while mouse1 held
-    AimKill = false,        -- silent aim, no key needed, fires on delay
+    AimKill = false,        -- silent aim, no key needed
     AimFire = false,        -- teleport behind fov enemy + auto fire, no camera
-    FireDelay = 0.3,        -- seconds between shots (aimfire + auto kill + aimkill)
+    FireDelay = 0.3,        -- seconds between shots (aimfire + auto kill)
     FireMin = 0.1,
     FireMax = 1.0,
     Magnet = false,         -- while mouse1 held, redirect shot to nearest enemy in radius
@@ -31,6 +29,7 @@ local CFG = {
     BodyAim = false,        -- torso only, for lock + magnet + fire (ignores head)
     Invisible = false,
     TeamCheck = true,
+    NPCs = true,
     WallCheck = false,
     Speed = false,
     WalkSpeed = 16,
@@ -48,24 +47,24 @@ local CFG = {
     ESPBox = false,
     ESPLine = false,
     ESPName = false,
-    ESPColor = "red",       -- name from COLOR_ORDER
-    ESPRGB = false,         -- cycles hue every frame
-    ESPTarget = "enemies",  -- "enemies" | "friends" | "all"
-    Chams = false,          -- hologram highlight through walls
-    ChamsColor = "yellow",  -- name from COLOR_ORDER
-    ChamsRGB = false,       -- cycles hue every frame
-    ChamsTarget = "enemies",-- "enemies" | "friends" | "all"
-    AutoKill = false,       -- teleport behind nearest enemy, aim camera, fire
+    ESPColor = "red",        -- player color preset, from COLOR_ORDER
+    ESPRGB = false,          -- cycles hue for players
+    ESPTarget = "enemies",   -- "enemies" | "friends" | "all"
+    Chams = false,           -- hologram highlight through walls
+    ChamsColor = "yellow",   -- player color preset, from COLOR_ORDER
+    ChamsRGB = false,        -- cycles hue for players
+    ChamsTarget = "enemies", -- "enemies" | "friends" | "all"
+    AutoKill = false,        -- teleport behind nearest enemy, aim camera, fire
     MenuKey = Enum.KeyCode.RightShift,
     ToggleKey = Enum.KeyCode.RightAlt,
 }
 
 local LP = Players.LocalPlayer
-local BIND = "sidzx12_loop"
+local BIND = "uaim_loop"
 local alive = true
 local conns = {}
 local refreshers = {}
-local targets = {}      -- combat targets: enemy players only
+local targets = {}      -- combat targets (enemies by team/npc rules)
 local visList = {}      -- visual targets: { hum, model, kind }
 local lastScan = 0
 local lastFire = 0
@@ -84,8 +83,7 @@ local CORNERS = {
     Vector3.new(1, 1, -1),   Vector3.new(1, 1, 1),
 }
 
--- shared color presets for esp and chams, in cycle order.
--- npc/bot is always pink and ignores preset + rgb.
+-- color presets for players (esp and chams each pick their own)
 local COLOR_ORDER = { "red", "orange", "yellow", "green", "cyan", "blue", "magenta", "white" }
 local COLORS = {
     red = Color3.fromRGB(255, 80, 80),
@@ -100,7 +98,9 @@ local COLORS = {
 local NPC_PINK = Color3.fromRGB(255, 105, 180)
 local VIS_TARGETS = { "enemies", "friends", "all" }
 
--- color for a model. npcs are always pink; players use the chosen preset or rgb cycle.
+-- the one color rule for both esp and chams:
+--   npc/bot  -> always pink, ignores rgb and presets
+--   player   -> rgb cycle if rgb is on, otherwise the chosen preset
 local function colorFor(kind, useRgb, presetName)
     if kind == "npc" then return NPC_PINK end
     if useRgb then
@@ -196,12 +196,11 @@ local function visAllowed(kind, setting)
     return kind == "friend"
 end
 
--- combat targeting: only real enemy players. npcs never enter `targets`,
--- so aimbot / silent / magnet / aimfire / autokill all skip them — they
--- only show up as pink esp/chams. teammates excluded when TeamCheck is on.
+-- combat targeting
 local function isEnemy(model)
     local p = Players:GetPlayerFromCharacter(model)
-    if not p or p == LP then return false end
+    if not p then return CFG.NPCs end
+    if p == LP then return false end
     if CFG.TeamCheck and LP.Team and p.Team == LP.Team then return false end
     return true
 end
@@ -336,7 +335,7 @@ local okHook, errHook = pcall(function()
     end))
 end)
 if not okHook then
-    warn("sidzx12: silent hook failed, executor lacks hookmetamethod - " .. tostring(errHook))
+    warn("uaim: silent hook failed, executor lacks hookmetamethod - " .. tostring(errHook))
 end
 
 -- movement: speed, jump, fly
@@ -346,58 +345,9 @@ local function getHumRoot()
     return char:FindFirstChildOfClass("Humanoid"), char:FindFirstChild("HumanoidRootPart")
 end
 
--- fly uses BodyVelocity so gravity is actually cancelled. the old approach
--- set AssemblyLinearVelocity from Heartbeat, but gravity eats it between
--- physics steps. camera-relative WASD, shift = 2x boost, velocity lerps.
-local flyBV = nil
-
-local function flyCleanup()
-    if flyBV then
-        pcall(function() flyBV:Destroy() end)
-        flyBV = nil
-    end
-end
-
-local function flyStep(dt, root, hum)
-    if not flyBV or not flyBV.Parent then
-        flyBV = Instance.new("BodyVelocity")
-        flyBV.Name = "sidzx12_fly"
-        flyBV.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-        flyBV.P = 1e4
-        flyBV.Parent = root
-    end
-
-    local cam = Workspace.CurrentCamera
-    local look = cam and cam.CFrame.LookVector or Vector3.new(0, 0, -1)
-    local fwd = Vector3.new(look.X, 0, look.Z)
-    if fwd.Magnitude < 0.01 then fwd = Vector3.new(0, 0, -1) else fwd = fwd.Unit end
-    local right = Vector3.new(-fwd.Z, 0, fwd.X)
-
-    local move = hum.MoveDirection
-    local f = move:Dot(fwd)
-    local r = move:Dot(right)
-    local target = fwd * f + right * r
-    if target.Magnitude > 1 then target = target.Unit end
-
-    local boost = 1
-    if UIS:IsKeyDown(Enum.KeyCode.LeftShift) then boost = 2 end
-
-    local vy = 0
-    if UIS:IsKeyDown(Enum.KeyCode.Space) then vy = 1
-    elseif UIS:IsKeyDown(Enum.KeyCode.LeftControl) then vy = -1 end
-
-    local speed = CFG.FlySpeed * boost
-    local want = Vector3.new(target.X * speed, vy * speed, target.Z * speed)
-
-    flyBV.Velocity = flyBV.Velocity:Lerp(want, math.clamp(dt * 12, 0, 1))
-end
-
-local function movementStep(dt)
+local function movementStep()
     local hum, root = getHumRoot()
-    if not hum or hum.Health <= 0 then
-        flyCleanup()
-        return
-    end
+    if not hum or hum.Health <= 0 then return end
 
     if CFG.Speed then
         hum.WalkSpeed = CFG.WalkSpeed
@@ -407,16 +357,26 @@ local function movementStep(dt)
         hum.JumpPower = CFG.JumpPower
     end
 
+    -- fly only when the fly feature is on AND the fly key has started it
     if CFG.Fly and flying and root then
-        flyStep(dt, root, hum)
-    else
-        flyCleanup()
+        local move = hum.MoveDirection
+        local vy = 0
+        if UIS:IsKeyDown(Enum.KeyCode.Space) then
+            vy = 1
+        elseif UIS:IsKeyDown(Enum.KeyCode.LeftControl) then
+            vy = -1
+        end
+        root.AssemblyLinearVelocity = Vector3.new(
+            move.X * CFG.FlySpeed,
+            vy * CFG.FlySpeed,
+            move.Z * CFG.FlySpeed
+        )
     end
 end
 
-table.insert(conns, RunService.Heartbeat:Connect(function(dt)
-    local ok, err = pcall(movementStep, dt)
-    if not ok then warn("sidzx12 move: " .. tostring(err)) end
+table.insert(conns, RunService.Heartbeat:Connect(function()
+    local ok, err = pcall(movementStep)
+    if not ok then warn("uaim move: " .. tostring(err)) end
 end))
 
 -- nearest enemy by world distance (used by auto kill)
@@ -434,22 +394,14 @@ local function nearestEnemy()
     return best
 end
 
--- fires once per fire delay. tool -> Activate, else mouse1 click fallback
--- for weapons that read MouseButton1 (most non-tool guns).
+-- one shot through the held tool only, at most once per fire delay
 local function fireOnce(now)
     if now - lastFire < CFG.FireDelay then return end
     local char = LP.Character
     local tool = char and char:FindFirstChildOfClass("Tool")
+    if not tool then return end
     lastFire = now
-    if tool then
-        pcall(function() tool:Activate() end)
-    else
-        pcall(function()
-            VIM:SendMouseButtonEvent(0, 0, 0, true, game, 0)
-            task.wait(0.02)
-            VIM:SendMouseButtonEvent(0, 0, 0, false, game, 0)
-        end)
-    end
+    pcall(function() tool:Activate() end)
 end
 
 -- shared by auto kill and aimfire: move 3 studs behind the enemy (throttled),
@@ -571,15 +523,15 @@ local function updateVisuals(cam)
     for _, v in ipairs(visList) do
         local m = v.model
 
-        -- chams: only when chams is on AND this kind matches chams target.
-        -- npc is always pink via colorFor.
+        -- chams: own target, own color (npc stays pink inside colorFor)
         if CFG.Chams and visAllowed(v.kind, CFG.ChamsTarget) then
             keepCham[m] = true
-            local okC, errC = pcall(updateCham, m, colorFor(v.kind, CFG.ChamsRGB, CFG.ChamsColor))
-            if not okC then warn("sidzx12 chams: " .. tostring(errC)) end
+            local okC, errC = pcall(updateCham, m,
+                colorFor(v.kind, CFG.ChamsRGB, CFG.ChamsColor))
+            if not okC then warn("uaim chams: " .. tostring(errC)) end
         end
 
-        -- esp: only when at least one esp box/line/name is on AND this kind matches esp target
+        -- esp: own target, own color (npc stays pink inside colorFor)
         if Drawing and espAny and visAllowed(v.kind, CFG.ESPTarget)
             and v.hum.Health > 0 and m.Parent then
             local minX, minY, maxX, maxY = screenBox(m, cam)
@@ -629,7 +581,7 @@ end
 
 -- menu gui
 local gui = Instance.new("ScreenGui")
-gui.Name = "sidzx12_menu"
+gui.Name = "uaim_menu"
 gui.ResetOnSpawn = false
 gui.DisplayOrder = 999
 gui.IgnoreGuiInset = true
@@ -642,7 +594,7 @@ end
 
 -- fov ring (gui, resizes live)
 local ringGui = Instance.new("ScreenGui")
-ringGui.Name = "sidzx12_fov"
+ringGui.Name = "uaim_fov"
 ringGui.IgnoreGuiInset = true
 ringGui.ResetOnSpawn = false
 ringGui.DisplayOrder = 998
@@ -679,7 +631,7 @@ title.Size = UDim2.new(1, -28, 0, 28)
 title.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
 title.BorderSizePixel = 0
 title.AutoButtonColor = false
-title.Text = "  aimbot by sidzx12  (drag here)"
+title.Text = "  uaim  (drag here)"
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Font = Enum.Font.Code
 title.TextSize = 15
@@ -755,13 +707,13 @@ end))
 
 -- reopen pill, shown when the menu is tucked away
 local pill = Instance.new("TextButton")
-pill.Size = UDim2.fromOffset(120, 24)
+pill.Size = UDim2.fromOffset(64, 24)
 pill.Position = UDim2.fromOffset(10, 10)
 pill.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
 pill.BorderSizePixel = 0
-pill.Text = "aimbot by sidzx12"
+pill.Text = "uaim"
 pill.Font = Enum.Font.Code
-pill.TextSize = 13
+pill.TextSize = 14
 pill.TextColor3 = Color3.fromRGB(240, 240, 240)
 pill.Visible = false
 pill.Parent = gui
@@ -1028,10 +980,7 @@ sliderRow("jump power", function() return CFG.JumpPower end,
 toggleRow("fly", function() return CFG.Fly end,
     function(v)
         CFG.Fly = v
-        if not v then
-            flying = false
-            flyCleanup()
-        end
+        if not v then flying = false end
     end)
 do
     local b = mkBtn("")
@@ -1039,10 +988,7 @@ do
         b.Text = "fly key [F]: " .. (flying and "flying" or "landed")
     end
     b.MouseButton1Click:Connect(function()
-        if CFG.Fly then
-            flying = not flying
-            if not flying then flyCleanup() end
-        end
+        if CFG.Fly then flying = not flying end
         refreshAll()
     end)
     table.insert(refreshers, refresh)
@@ -1062,7 +1008,6 @@ table.insert(conns, UIS.InputBegan:Connect(function(input, gp)
     elseif input.KeyCode == CFG.FlyKey then
         if CFG.Fly then
             flying = not flying
-            if not flying then flyCleanup() end
             refreshAll()
         end
     end
@@ -1077,8 +1022,7 @@ local function autoKillStep(now)
     return goal
 end
 
--- one render frame. every mode is evaluated; early return only when the mode
--- owns the camera and would fight another mode's camera write.
+-- one render frame. wrapped by xpcall below so errors show a traceback
 local function renderStep()
     local cam = Workspace.CurrentCamera
     if not cam then return end
@@ -1092,7 +1036,7 @@ local function renderStep()
     ring.Size = UDim2.fromOffset(CFG.FOV * 2, CFG.FOV * 2)
     ring.Visible = CFG.FOVEnabled
 
-    -- autokill: teleport + fire + camera. owns the camera, so it runs alone.
+    -- auto kill takes priority
     if CFG.AutoKill then
         local ok, res = pcall(autoKillStep, now)
         if ok and res then
@@ -1100,13 +1044,13 @@ local function renderStep()
                 cam.CFrame = CFrame.lookAt(cam.CFrame.Position, res)
             end
             silentTarget = res
+            return
         elseif not ok then
-            warn("sidzx12 autokill: " .. tostring(res))
+            warn("uaim autokill: " .. tostring(res))
         end
-        return
     end
 
-    -- aimfire: teleport + fire, camera left alone
+    -- aimfire: teleport behind the fov enemy and fire. camera is left alone
     if CFG.AimFire and CFG.FOVEnabled then
         local _, tgtModel = pickTarget()
         if tgtModel then
@@ -1114,45 +1058,38 @@ local function renderStep()
             if ok and res then
                 fireOnce(now)
             elseif not ok then
-                warn("sidzx12 aimfire: " .. tostring(res))
+                warn("uaim aimfire: " .. tostring(res))
             end
         end
+        silentTarget = nil
+        return
     end
 
-    -- magnet: only redirects the shot while mouse1 is held, no camera touch.
-    -- does not return, so aimbot lock below still gets a shot at the camera
-    -- when magnet isn't currently engaged.
-    local magnetTarget = nil
-    if CFG.Magnet and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
-        magnetTarget = pickMagnet()
+    -- magnet owns aim while on: no camera lock, only the shot is redirected
+    -- to the nearest enemy inside the magnet radius while mouse1 is held
+    if CFG.Magnet then
+        if UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+            silentTarget = pickMagnet()
+        else
+            silentTarget = nil
+        end
+        return
     end
 
-    -- aimbot lock + silent/aimkill
-    local lockTarget = nil
+    -- aimbot lock, only when fov is on
+    local tgt = nil
     if CFG.Aimbot and CFG.FOVEnabled then
-        lockTarget = pickTarget()
+        tgt = pickTarget()
     end
 
-    -- silent redirect: aimkill fires without any mouse input; silent needs mouse1.
-    -- magnet, if engaged, wins over the lock for the shot's redirect point.
-    local redirect = magnetTarget or lockTarget
-    local silentWanted = redirect ~= nil and (
-        CFG.AimKill
-        or magnetTarget ~= nil
-        or (CFG.Silent and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1))
-    )
-    silentTarget = silentWanted and redirect or nil
+    local silentOn = tgt ~= nil and (CFG.AimKill
+        or (CFG.Silent and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)))
+    silentTarget = silentOn and tgt or nil
 
-    -- aimkill fires on its own on the fire delay, no tool/key required beyond holding a tool
-    if CFG.AimKill and redirect then
-        pcall(fireOnce, now)
-    end
-
-    -- camera lock: skip when magnet is engaged this frame (would fight the shot),
-    -- skip when silent-only (silent/aimkill don't move the camera).
-    local silentOnly = CFG.AimKill or CFG.Silent
-    if lockTarget and not silentOnly and not magnetTarget then
-        cam.CFrame = CFrame.lookAt(cam.CFrame.Position, lockTarget)
+    -- lock straight onto the nearest enemy in fov (no smoothing).
+    -- silent/aimkill redirect the shot instead of moving the camera.
+    if tgt and not silentOn then
+        cam.CFrame = CFrame.lookAt(cam.CFrame.Position, tgt)
     end
 end
 
@@ -1160,7 +1097,7 @@ local function runVisuals()
     local cam = Workspace.CurrentCamera
     if cam then
         local ok, err = pcall(updateVisuals, cam)
-        if not ok then warn("sidzx12 visuals: " .. tostring(err)) end
+        if not ok then warn("uaim visuals: " .. tostring(err)) end
     end
 end
 
@@ -1168,20 +1105,19 @@ RunService:BindToRenderStep(BIND, Enum.RenderPriority.Last.Value, function()
     local ok, err = xpcall(renderStep, debug.traceback)
     if not ok and err ~= lastRenderErr then
         lastRenderErr = err
-        warn("sidzx12 render: " .. tostring(err))
+        warn("uaim render: " .. tostring(err))
     end
     runVisuals()
 end)
 
 -- unload
 if getgenv then
-    getgenv().__sidzx12_unload = function()
+    getgenv().__uaim_unload = function()
         alive = false
         silentTarget = nil
         activeSlider = nil
         dragging = false
         flying = false
-        flyCleanup()
         RunService:UnbindFromRenderStep(BIND)
         for _, c in ipairs(conns) do c:Disconnect() end
         for m in pairs(espCache) do destroyEsp(m) end
